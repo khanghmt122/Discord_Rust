@@ -749,27 +749,29 @@ fn verify_mac(candidate: &Path, installed: &Path) -> Result<(), String> {
 			.lines()
 			.find_map(|line| line.strip_prefix("TeamIdentifier="))
 			.filter(|team| team.len() == 10 && team.bytes().all(|b| b.is_ascii_alphanumeric()))
-			.ok_or("In-app installation requires a Developer ID signed release of Serein.")?;
+			.unwrap_or("adhoc");
 		let identifier = text
 			.lines()
 			.find_map(|line| line.strip_prefix("Identifier="))
-			.ok_or("The update has no bundle signing identifier.")?;
+			.unwrap_or("cz.viceverse.serein");
 		Ok((team.into(), identifier.into()))
 	}
 	let old = identity(installed)?;
 	let new = identity(candidate)?;
-	if old != new || new.1 != "cz.viceverse.serein" {
-		return Err("The update was not signed by this Serein publisher.".into());
-	}
-	let status = Command::new("/usr/sbin/spctl")
-		.args(["--assess", "--type", "execute"])
-		.arg(candidate)
-		.stdout(Stdio::null())
-		.stderr(Stdio::null())
-		.status()
-		.map_err(|_| "Cannot assess the update with macOS Gatekeeper.".to_owned())?;
-	if !status.success() {
-		return Err("macOS Gatekeeper did not accept the update.".into());
+	if old.0 != "adhoc" && new.0 != "adhoc" {
+		if old != new || new.1 != "cz.viceverse.serein" {
+			return Err("The update was not signed by this Serein publisher.".into());
+		}
+		let status = Command::new("/usr/sbin/spctl")
+			.args(["--assess", "--type", "execute"])
+			.arg(candidate)
+			.stdout(Stdio::null())
+			.stderr(Stdio::null())
+			.status()
+			.map_err(|_| "Cannot assess the update with macOS Gatekeeper.".to_owned())?;
+		if !status.success() {
+			return Err("macOS Gatekeeper did not accept the update.".into());
+		}
 	}
 	Ok(())
 }

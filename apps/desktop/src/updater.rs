@@ -18,7 +18,7 @@ mod delta;
 #[path = "updater_install.rs"]
 mod install;
 
-const RELEASES: &str = "https://api.github.com/repos/ViceVerse-cz/Serein/releases";
+const RELEASES: &str = "https://api.github.com/repos/khanghmt122/Discord_Rust/releases";
 const MAX_METADATA: usize = 2 * 1024 * 1024;
 const MAX_DOWNLOAD: u64 = 512 * 1024 * 1024;
 const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -687,11 +687,11 @@ fn select_release(
 			return Err("The release asset metadata is invalid.".into());
 		}
 		let expected = format!(
-			"https://github.com/ViceVerse-cz/Serein/releases/download/{}/{name}",
+			"https://github.com/khanghmt122/Discord_Rust/releases/download/{}/{name}",
 			release.tag_name
 		);
 		if asset.browser_download_url != expected {
-			return Err("The asset is not from the Serein release repository.".into());
+			return Err("The asset is not from the Discord_Rust release repository.".into());
 		}
 		Ok(asset.clone())
 	};

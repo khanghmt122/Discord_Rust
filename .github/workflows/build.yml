@@ -1,0 +1,163 @@
+name: Build & Release Serein
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    name: Prepare Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+    steps:
+      - name: Compute Nightly Version & Tag
+        id: ver
+        run: |
+          DATE=$(date +'%Y%m%d')
+          VERSION="1.0.0-nightly.${DATE}.${{ github.run_number }}"
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Planned version: ${VERSION} (${TAG})"
+
+  build-windows:
+    name: Build Windows x64
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply version to manifests
+        shell: bash
+        run: |
+          python3 .github/release/version.py "$VERSION"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt, clippy
+
+      - name: Install NSIS
+        run: choco install nsis --no-progress -y
+
+      - name: Package Windows app
+        shell: bash
+        run: |
+          cargo xtask package
+          mkdir -p release-assets
+
+      - name: Archive Windows portable ZIP & Installer
+        shell: pwsh
+        run: |
+          $TAG = "${{ env.TAG }}"
+          $ZIP_NAME = "serein-${TAG}-Windows-X64.zip"
+          
+          # 1. Package zip for in-app updater
+          Compress-Archive -Path "dist/*" -DestinationPath "release-assets/$ZIP_NAME"
+          
+          # Convenient static name for manual downloads
+          Copy-Item -LiteralPath "release-assets/$ZIP_NAME" -Destination "release-assets/Serein-Windows-X64-Portable.zip"
+
+          # 2. Package setup installer
+          $installer = Get-ChildItem -Path "dist-installer/*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($installer) {
+            Copy-Item -LiteralPath $installer.FullName -Destination "release-assets/serein-${TAG}-Windows-X64-Setup.exe"
+            Copy-Item -LiteralPath $installer.FullName -Destination "release-assets/Serein-Windows-X64-Setup.exe"
+          }
+
+      - name: Upload Windows Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-assets
+          path: release-assets/*
+          retention-days: 1
+
+  build-macos:
+    name: Build macOS ARM64
+    needs: prepare
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply version to manifests
+        run: |
+          python3 .github/release/version.py "$VERSION"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt, clippy
+
+      - name: Package macOS app
+        run: |
+          cargo xtask package
+          mkdir -p release-assets
+          ditto -c -k --sequesterRsrc dist "release-assets/serein-${TAG}-macOS-ARM64.zip"
+          cp "release-assets/serein-${TAG}-macOS-ARM64.zip" "release-assets/Serein-macOS-ARM64.zip"
+
+      - name: Upload macOS Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-assets
+          path: release-assets/*
+          retention-days: 1
+
+  publish:
+    name: Publish Release
+    needs: [prepare, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all assets
+        uses: actions/download-artifact@v4
+        with:
+          path: all-assets
+          merge-multiple: true
+
+      - name: Generate Checksums
+        working-directory: all-assets
+        run: |
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Publish Public GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: "Serein / AetherCord ${{ needs.prepare.outputs.tag }}"
+          body: |
+            ## Release ${{ needs.prepare.outputs.tag }}
+            - Fully compatible with in-app auto-updater.
+            - Includes Large File Auto-Uploader (bypasses 20MB limit).
+            - Direct downloads for Windows x64 and macOS ARM64.
+          prerelease: true
+          files: all-assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

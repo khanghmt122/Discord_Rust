@@ -3041,13 +3041,13 @@ impl Desktop {
 				}
 				Command::Website => {
 					ctx.open_url(egui::OpenUrl::new_tab(
-						"https://github.com/ViceVerse-cz/Serein",
+						"https://github.com/khanghmt122/Discord_Rust",
 					));
 					None
 				}
 				Command::ReportIssue => {
 					ctx.open_url(egui::OpenUrl::new_tab(
-						"https://github.com/ViceVerse-cz/Serein/issues/new/choose",
+						"https://github.com/khanghmt122/Discord_Rust/issues/new/choose",
 					));
 					None
 				}

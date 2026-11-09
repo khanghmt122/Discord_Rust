@@ -4060,7 +4060,9 @@ impl MessagingUi {
                             } else if self.send_application_command(state, channel, commands)
                                 || self.handle_builtin_slash(state, channel, ctx, commands) {
                             } else if oversized {
-                                self.toasts.push(design::Level::Error, oversized_text(upload_limit));
+                                if let Some(first_oversized) = self.selected_files().iter().position(|(_, b)| *b > upload_limit) {
+                                    self.host_attachment_requested = Some(first_oversized);
+                                }
                             } else if !self.upload_busy && !(state.demo && self.attachment.is_some()) {
                                 self.submit_composer(state, ctx, commands);
                             }
@@ -4117,7 +4119,7 @@ impl MessagingUi {
 		let files = self.selected_files();
 		// Public hosting is only offered for files Discord would refuse.
 		if files.iter().any(|(_, bytes)| *bytes > upload_limit) {
-			design::notice(ui, design::Level::Error, &oversized_text(upload_limit));
+			design::notice(ui, design::Level::Info, &oversized_text(upload_limit));
 			ui.add_space(6.0);
 		}
 		egui::ScrollArea::horizontal()

@@ -1,0 +1,33 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    # Chạy tự động hàng ngày lúc 04:00 UTC
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    name: Sync with ViceVerse-cz/Serein
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch and Merge Upstream
+        run: |
+          git remote add upstream https://github.com/ViceVerse-cz/Serein.git || true
+          git fetch upstream main
+          git checkout main
+          git merge upstream/main -m "chore: sync with upstream ViceVerse-cz/Serein"
+          git push origin main
