@@ -447,3 +447,4 @@ Demo fixtures and simulated actions are excluded from normal app and CI packages
 Build with `--features demo` and launch with `--demo` to enable them; `--demo-*`
 scenario flags additionally require `--demo`. `cargo xtask package` always builds
 without demo support, while offline tests can still use synthetic fixtures.
+
