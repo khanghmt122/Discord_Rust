@@ -5,6 +5,9 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-windows:
     name: Build Windows x64 Executable & Installer
@@ -47,3 +50,13 @@ jobs:
           name: Serein-Windows-x64
           path: release-assets/*
           retention-days: 14
+
+      - name: Publish Public GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Serein Windows Build"
+          body: "Direct public download of the Windows x64 build. No GitHub login required."
+          files: release-assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
