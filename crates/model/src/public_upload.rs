@@ -46,7 +46,6 @@ pub fn eligible(host: Host, filename: &str, bytes: u64) -> bool {
 		.to_ascii_lowercase();
 	bytes > 0
 		&& bytes <= host.max_bytes()
-		&& !matches!(extension.as_str(), "exe" | "scr" | "cpl" | "jar" | "apk")
 		&& match host {
 			Host::X0At => true,
 			Host::Catbox => {

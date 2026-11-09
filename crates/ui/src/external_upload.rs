@@ -14,6 +14,7 @@ pub struct ExternalUpload {
 	host: Host,
 	pub request: Option<Request>,
 	pub cancel_requested: bool,
+	pub remove_attachment_index: Option<usize>,
 }
 pub struct Request {
 	pub generation: u64,
@@ -209,8 +210,15 @@ impl ExternalUpload {
 						.inner
 						.clicked()
 					{
-						if append_link(state, prompt.channel, link) {
+						let link_text = format!(
+							"[{} ({})]({})",
+							prompt.filename,
+							attachments::format_size(prompt.bytes),
+							link
+						);
+						if append_link(state, prompt.channel, &link_text) {
 							draft_changes.push(prompt.channel);
+							self.remove_attachment_index = Some(prompt.index);
 							close = true;
 						} else {
 							prompt.draft_full = true;

@@ -4571,7 +4571,7 @@ voice-recipient-not-in-call = Not in call
 reconnect-now = Reconnect now
 
 # Explicit public attachment hosting
-public-upload-host-file = Share link instead…
+public-upload-host-file = 🚀 Upload & share link…
 public-upload-heading = Share with a public link
 public-upload-subtitle = Upload the file to a public host and send its link instead of a Discord attachment
 public-upload-offline = Offline preview · no file is uploaded

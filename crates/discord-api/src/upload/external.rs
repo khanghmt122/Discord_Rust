@@ -255,12 +255,12 @@ mod tests {
 			("file.zip", 0),
 			("file.zip", Host::Catbox.max_bytes() + 1),
 			("private.DOCX", 1),
-			("app.EXE", 1),
 			("image.gif", 20_000_001),
 		] {
 			assert!(!eligible(Host::Catbox, name, size));
 		}
-		assert!(!eligible(Host::X0At, "app.exe", 1));
+		assert!(eligible(Host::X0At, "app.exe", 1));
+		assert!(eligible(Host::Catbox, "app.exe", 1));
 		assert!(!eligible(
 			Host::X0At,
 			"file.zip",

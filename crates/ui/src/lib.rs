@@ -4148,7 +4148,7 @@ impl MessagingUi {
 											design::button(
 												ui,
 												"public-upload-host-file",
-												design::ButtonKind::Neutral,
+												design::ButtonKind::Primary,
 											)
 										})
 										.inner
@@ -5558,6 +5558,9 @@ impl MessagingUi {
 		}
 		self.external_upload
 			.show(&ctx, state, &mut self.draft_changes);
+		if let Some(index) = self.external_upload.remove_attachment_index.take() {
+			self.remove_attachment_index = Some(index);
+		}
 		self.search
 			.overlays(&ctx, state, &mut self.avatars, &mut commands);
 		if state.invite_challenge().is_none() {
