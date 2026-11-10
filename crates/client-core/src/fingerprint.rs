@@ -7,11 +7,11 @@
 //! web client. Nothing here carries account data; it is the same for every user.
 
 /// Chrome version advertised on Windows and Linux; bump together when refreshing.
-const CHROME_MAJOR: &str = "128";
+const CHROME_MAJOR: &str = "133";
 /// Safari version advertised on macOS, where the verification widget runs in WebKit.
-const SAFARI_VERSION: &str = "18.5";
+const SAFARI_VERSION: &str = "18.3";
 /// Build number of the official web client this fingerprint mirrors.
-pub const CLIENT_BUILD_NUMBER: u64 = 634_304;
+pub const CLIENT_BUILD_NUMBER: u64 = 645_000;
 pub const LOCALE: &str = "en-US";
 
 /// Discord's spelling of the host operating system.

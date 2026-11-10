@@ -41,13 +41,7 @@ impl ChannelPreferences {
 			.saturating_add(self.pinned.len())
 			.saturating_add(self.collapsed_categories.len())
 			<= Self::MAX_ENTRIES
-			&& self
-				.favorites
-				.capacity()
-				.saturating_add(self.pinned.capacity())
-				.saturating_add(self.collapsed_categories.capacity())
-				<= Self::MAX_ENTRIES * 3
-			&& self.last_channels.capacity() <= Self::MAX_LAST_CHANNELS * 2
+			&& self.last_channels.len() <= Self::MAX_LAST_CHANNELS
 			&& self
 				.last_channels
 				.iter()
