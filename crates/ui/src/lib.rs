@@ -131,6 +131,7 @@ mod timeline;
 #[cfg(test)]
 mod title_bar_tests;
 pub mod toasts;
+pub mod translation;
 mod typing;
 pub mod updates;
 mod user_direct;
@@ -259,6 +260,7 @@ pub struct MessagingUi {
 	poll_creator: polls::Creator,
 	pub language: i18n::Language,
 	forwarding: forwarding::ForwardDialog,
+	pub auto_translate: bool,
 	pub convert_emoticons: bool,
 	/// Device preference: request a conversation's page while the pointer rests on it.
 	pub preload_on_hover: bool,
@@ -669,6 +671,16 @@ enum MentionWrite {
 }
 
 impl MessagingUi {
+	/// Enqueued translation requests to be processed by the desktop runtime.
+	pub fn take_translation_requests(&mut self) -> Vec<(Id, String)> {
+		self.timeline.take_translation_requests()
+	}
+
+	/// Receives an asynchronous translation result from the desktop runtime.
+	pub fn receive_translation(&mut self, id: Id, result: Result<(String, String), String>) {
+		self.timeline.receive_translation(id, result);
+	}
+
 	pub fn interaction_modal_id(&self) -> Option<Id> {
 		self.interaction_components.modal_id()
 	}
@@ -5414,6 +5426,7 @@ impl MessagingUi {
 						if let Some(command) = state.request_author_members(&author_lookup) {
 							commands.push(command);
 						}
+						self.timeline.translation.auto_translate = self.auto_translate;
 						self.timeline.show_with_scroll(
 							ui,
 							state,

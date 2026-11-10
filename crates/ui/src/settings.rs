@@ -1191,6 +1191,12 @@ impl MessagingUi {
 				Some("settings-convert-emoticons-description"),
 				&mut self.convert_emoticons,
 			);
+			design::switch(
+				ui,
+				"Tự động dịch tin nhắn nước ngoài (Auto-translate)",
+				Some("Tự động dịch tin nhắn tiếng Anh, Hàn, Nga,... sang tiếng Việt trực tiếp ngay dưới dòng chat"),
+				&mut self.auto_translate,
+			);
 		});
 		design::group(
 			ui,

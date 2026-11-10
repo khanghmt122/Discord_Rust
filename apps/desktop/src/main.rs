@@ -60,6 +60,7 @@ mod spotify;
 mod startup;
 mod sticker_upload;
 mod toggle_setting;
+mod translation;
 mod tray_window;
 mod updater;
 mod uploads;
@@ -1083,6 +1084,9 @@ struct Desktop {
 	/// Linux desktop light/dark preference; winit reports it everywhere else.
 	system_theme: platform::system_theme::SystemTheme,
 	tray_error: Option<&'static str>,
+	translation_tx: std::sync::mpsc::Sender<(model::Id, Result<(String, String), String>)>,
+	translation_rx: std::sync::mpsc::Receiver<(model::Id, Result<(String, String), String>)>,
+	translation_client: reqwest::Client,
 	tray_window: tray_window::State,
 	/// Native menu bar, retitled whenever the interface language changes.
 	#[cfg(target_os = "macos")]
@@ -2367,7 +2371,15 @@ impl Desktop {
 			.ok()
 			.map(|menu| (menu, ui::i18n::Language::System))
 		};
+		let (translation_tx, translation_rx) = std::sync::mpsc::channel();
+		let translation_client = reqwest::Client::builder()
+			.timeout(Duration::from_secs(6))
+			.build()
+			.unwrap_or_default();
 		Ok(Self {
+			translation_tx,
+			translation_rx,
+			translation_client,
 			proxy_auth: proxy_auth::Authentication::default(),
 			api_proxy: tokio::sync::watch::channel(None).0,
 			extensions: extension_bridge::Bridge::default(),
@@ -6798,6 +6810,27 @@ impl eframe::App for Desktop {
 					.is_some_and(|worker| worker.request(key.clone()))
 				{
 					self.messaging.accept_avatar(&ctx, key, None);
+				}
+			}
+			while let Ok((id, res)) = self.translation_rx.try_recv() {
+				self.messaging.receive_translation(id, res);
+			}
+			for (id, text) in self.messaging.take_translation_requests() {
+				if self.state.demo || self.fixture_only {
+					let _ = self.translation_tx.send((
+						id,
+						Ok((format!("[Bản dịch] {}", text), "en".to_string())),
+					));
+					ctx.request_repaint();
+				} else {
+					let client = self.translation_client.clone();
+					let tx = self.translation_tx.clone();
+					let wake = ctx.clone();
+					self.runtime.spawn(async move {
+						let result = translation::translate(&client, &text).await;
+						let _ = tx.send((id, result));
+						wake.request_repaint();
+					});
 				}
 			}
 			// Idle frames are freed on a pass, so an otherwise idle window wakes once for them.

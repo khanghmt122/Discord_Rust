@@ -68,6 +68,7 @@ pub struct TimelineView {
 	pub(super) reply_target: Option<Id>,
 	pending_reveal: Option<TargetReveal>,
 	reveal_scroll: Option<RevealScroll>,
+	pub(super) translation: crate::translation::TranslationManager,
 	/// Animated return to the live edge: offset it started from and elapsed seconds.
 	present_scroll: Option<(f32, f32)>,
 	/// Where the jump-to-present control was painted this frame, for hit tests in tests.
@@ -1394,8 +1395,9 @@ fn row_height_key(
 	boundary: Option<Id>,
 	state: &State,
 	deleted: bool,
+	translation_key: u64,
 ) -> u64 {
-	row_key(message, previous, boundary, state) ^ u64::from(deleted)
+	row_key(message, previous, boundary, state) ^ u64::from(deleted) ^ translation_key
 }
 fn divider(ui: &mut egui::Ui, label: String, unread: bool, compact: bool) {
 	let colors = crate::design::palette(ui);
@@ -1678,6 +1680,7 @@ fn message_actions(
 		model::ReactionEmoji,
 		&mut Option<(Id, model::ReactionEmoji, bool)>,
 	)>,
+	translate: Option<(bool, &mut Option<Id>)>,
 ) {
 	let (mark_read, mark_unread, reply) = selection;
 	let (editing, edit_started) = editing;
@@ -1742,6 +1745,19 @@ fn message_actions(
 		{
 			ui.ctx().copy_text(message.id.to_string());
 			ui.close();
+		}
+		if let Some((visible, toggle)) = translate
+			&& !message.content.trim().is_empty()
+		{
+			let label = if visible {
+				"Ẩn bản dịch tiếng Việt"
+			} else {
+				"🌐 Dịch sang tiếng Việt"
+			};
+			if ui.button(label).clicked() {
+				*toggle = Some(message.id);
+				ui.close();
+			}
 		}
 		if ui
 			.add_enabled(
@@ -2346,6 +2362,13 @@ impl TimelineView {
 			TargetReveal::Center
 		});
 	}
+	pub fn take_translation_requests(&mut self) -> Vec<(Id, String)> {
+		std::mem::take(&mut self.translation.requests)
+	}
+	pub fn receive_translation(&mut self, id: Id, result: Result<(String, String), String>) {
+		self.translation.receive(id, result);
+		self.heights.remove(&id);
+	}
 	/// Render the message timeline using a default scroll session (test helper).
 	#[cfg(test)]
 	pub fn show(
@@ -2413,6 +2436,7 @@ impl TimelineView {
 				compact_messages: self.compact_messages,
 				hide_media_links: self.hide_media_links,
 				instant_scrolling: self.instant_scrolling,
+				translation: std::mem::take(&mut self.translation),
 				suppressed_deleted_highlight: std::mem::take(
 					&mut self.suppressed_deleted_highlight,
 				),
@@ -2602,7 +2626,7 @@ impl TimelineView {
 				.map(|m| {
 					let prior = previous;
 					let deleted = state.timeline.is_deleted(m.id);
-					let key = row_height_key(m, prior, self.unread_boundary, state, deleted);
+					let key = row_height_key(m, prior, self.unread_boundary, state, deleted, self.translation.height_key(m.id));
 					previous = Some(m);
 					let lines = m
 						.content
@@ -3043,6 +3067,7 @@ impl TimelineView {
 							self.unread_boundary,
 							state,
 							state.timeline.is_deleted(id),
+							self.translation.height_key(id),
 						),
 						response.rect.height(),
 					));
@@ -3084,7 +3109,7 @@ impl TimelineView {
 					&& state.interactions.pending.is_none()
 					&& let Some(&(key, height)) = self.heights.get(&id)
 					&& key
-						== row_height_key(message, previous, self.unread_boundary, state, deleted)
+						== row_height_key(message, previous, self.unread_boundary, state, deleted, self.translation.height_key(id))
 				{
 					ui.add_space(height);
 					// Keep one result per row: visible height updates below zip by index.
@@ -3777,6 +3802,107 @@ impl TimelineView {
 													.color(colors.muted),
 												);
 											}
+											// Auto-translate foreign messages if enabled
+											if self.translation.auto_translate && !message.content.trim().is_empty() {
+												if !crate::translation::TranslationManager::is_vietnamese_text(&message.content) {
+													self.translation.request_if_needed(id, &message.content);
+												}
+											}
+											// Quick Translate Inline display
+											let mut hide_translation = false;
+											let mut retry_translation = false;
+											if let Some(status) = self.translation.translations.get(&id) {
+												match status {
+													crate::translation::TranslationStatus::Loading => {
+														ui.add_space(2.0);
+														ui.horizontal(|ui| {
+															ui.spacing_mut().item_spacing.x = 4.0;
+															ui.label(RichText::new("🌐").size(12.0));
+															ui.label(
+																RichText::new("Đang dịch tin nhắn...")
+																	.size(12.0)
+																	.italics()
+																	.color(colors.muted),
+															);
+														});
+													}
+													crate::translation::TranslationStatus::Success {
+														translated,
+														source_lang_name,
+														visible: true,
+														..
+													} => {
+														ui.add_space(4.0);
+														let stroke = egui::Stroke::new(1.0, colors.border);
+														let frame = egui::Frame::NONE
+															.fill(colors.raised)
+															.stroke(stroke)
+															.corner_radius(4.0)
+															.inner_margin(egui::Margin::symmetric(8, 6));
+														let card_response = frame.show(ui, |ui| {
+															ui.set_max_width(ui.available_width().min(650.0));
+															ui.horizontal(|ui| {
+																ui.label(RichText::new("🌐").size(12.0));
+																ui.label(
+																	RichText::new(format!("Bản dịch từ {}", source_lang_name))
+																		.size(11.0)
+																		.strong()
+																		.color(colors.accent),
+																);
+																ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+																	if ui
+																		.small_button("✕")
+																		.on_hover_text("Ẩn bản dịch")
+																		.clicked()
+																	{
+																		hide_translation = true;
+																	}
+																	if ui
+																		.small_button("📋")
+																		.on_hover_text("Sao chép bản dịch")
+																		.clicked()
+																	{
+																		ui.ctx().copy_text(translated.clone());
+																	}
+																});
+															});
+															ui.add_space(2.0);
+															ui.label(
+																RichText::new(translated)
+																	.size(13.5)
+																	.color(colors.text),
+															);
+														});
+														surface.exclude(card_response.response.rect);
+													}
+													crate::translation::TranslationStatus::Error(err) => {
+														ui.add_space(2.0);
+														ui.horizontal(|ui| {
+															ui.spacing_mut().item_spacing.x = 4.0;
+															ui.label(RichText::new("⚠️").size(12.0));
+															ui.label(
+																RichText::new(format!("Lỗi dịch: {}", err))
+																	.size(12.0)
+																	.color(colors.danger),
+															);
+															if ui.small_button("Thử lại").clicked() {
+																retry_translation = true;
+															}
+														});
+													}
+													_ => {}
+												}
+											}
+											if hide_translation {
+												self.translation.hide(id);
+												self.heights.remove(&id);
+												ui.ctx().request_repaint();
+											}
+											if retry_translation {
+												self.translation.retry(id, &message.content);
+												self.heights.remove(&id);
+												ui.ctx().request_repaint();
+											}
 											if crate::embeds::has_media_spoilers(message) && !media
 											{
 												let reveal = ui.button(crate::i18n::translate(
@@ -4403,8 +4529,9 @@ impl TimelineView {
 							let link = state
 								.channel(message.channel)
 								.and_then(|channel| discord_url(channel, Some(id)));
+							let can_translate = !message.content.trim().is_empty();
 							let buttons = if react && !shift { 4 } else { 1 }
-								+ 3 + usize::from(own) + if shift {
+								+ 3 + usize::from(own) + usize::from(can_translate) + if shift {
 								2 + usize::from(link.is_some())
 									+ usize::from(can_delete) + usize::from(can_mark_unread)
 									+ usize::from(can_pin)
@@ -4520,6 +4647,28 @@ impl TimelineView {
 								*editing = Some((message.channel, id, message.content.clone()));
 								self.edit_started = true;
 							}
+							if can_translate {
+								let is_loading = self.translation.is_loading(id);
+								let is_visible = self.translation.is_visible(id);
+								let tooltip = if is_visible {
+									"Ẩn bản dịch tiếng Việt"
+								} else if is_loading {
+									"Đang dịch tin nhắn..."
+								} else {
+									"Dịch sang tiếng Việt"
+								};
+								if action_button(
+									&mut toolbar,
+									crate::icons::Icon::Globe,
+									tooltip,
+								)
+								.clicked()
+								{
+									self.translation.toggle(id, &message.content);
+									self.heights.remove(&id);
+									ui.ctx().request_repaint();
+								}
+							}
 							if shift {
 								let pinned = state.is_pinned(message.channel, id);
 								if can_pin
@@ -4617,6 +4766,8 @@ impl TimelineView {
 							{
 								popup = popup.at_pointer_fixed();
 							}
+							let translation_visible = self.translation.is_visible(id);
+							let mut toggle_translation = None;
 							message_actions(
 								popup,
 								(
@@ -4652,7 +4803,13 @@ impl TimelineView {
 									.map(|reaction| {
 										(reaction.emoji.clone(), &mut self.reaction_users)
 									}),
+								Some((translation_visible, &mut toggle_translation)),
 							);
+							if let Some(toggle_id) = toggle_translation {
+								self.translation.toggle(toggle_id, &message.content);
+								self.heights.remove(&toggle_id);
+								ui.ctx().request_repaint();
+							}
 							self.toolbar = Some((id, toolbar_rect));
 						}
 					}
@@ -4671,7 +4828,7 @@ impl TimelineView {
 				});
 				measurements.push((
 					id,
-					row_height_key(message, previous, self.unread_boundary, state, deleted),
+					row_height_key(message, previous, self.unread_boundary, state, deleted, self.translation.height_key(id)),
 					response.response.rect.height(),
 				));
 			}
@@ -6266,6 +6423,7 @@ mod tests {
 							(own, &mut thread_request),
 							(false, &mut None),
 							None,
+							None,
 						)
 					},
 				);
@@ -7412,7 +7570,7 @@ mod tests {
 			none,
 		);
 		let toolbar = view.toolbar.unwrap().1;
-		assert_eq!(toolbar.width(), 240.0);
+		assert_eq!(toolbar.width(), 270.0);
 		// The first quick reaction toggles through the shared reaction path.
 		for events in click(toolbar.left_center() + egui::vec2(14.0, 0.0), none) {
 			render(&mut view, &mut state, events, none);
