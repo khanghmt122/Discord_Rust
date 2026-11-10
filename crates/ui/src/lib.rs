@@ -53,9 +53,9 @@ pub mod emoji;
 mod emoji_details;
 mod emoji_picker;
 mod emoticons;
-pub(crate) mod nitro;
 pub mod fonts;
 pub mod i18n;
+pub(crate) mod nitro;
 #[cfg(all(debug_assertions, feature = "demo"))]
 pub fn debug_channel_creation(state: client_core::State) {
 	channel_menu::debug_creation(state);
@@ -2933,9 +2933,10 @@ impl MessagingUi {
 				std::mem::replace(draft, converted)
 			})
 		} else if unmasked != raw_draft {
-			state.drafts.get_mut(&channel).map(|draft| {
-				std::mem::replace(draft, unmasked.clone())
-			})
+			state
+				.drafts
+				.get_mut(&channel)
+				.map(|draft| std::mem::replace(draft, unmasked.clone()))
 		} else {
 			None
 		};

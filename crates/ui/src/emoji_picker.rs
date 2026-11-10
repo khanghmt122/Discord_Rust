@@ -938,12 +938,9 @@ impl Picker {
 		{
 			let animated = custom.map_or_else(|| text.starts_with("<a:"), |(_, e)| e.animated);
 			return Pick::Insert(
-				model::ImageShare::Emoji {
-					id,
-					animated,
-				}
-				.markdown(emoji.name.as_deref().unwrap_or("emoji"))
-				.unwrap_or(text),
+				model::ImageShare::Emoji { id, animated }
+					.markdown(emoji.name.as_deref().unwrap_or("emoji"))
+					.unwrap_or(text),
 			);
 		}
 		match self.reaction {
@@ -1590,7 +1587,8 @@ impl Picker {
 													Used::Custom(id) => state.custom_emoji(id),
 													Used::Unicode(_) => None,
 												};
-												let is_animated = custom.is_some_and(|(_, e)| e.animated);
+												let is_animated =
+													custom.is_some_and(|(_, e)| e.animated);
 												let (image, name, code, emoji, text) =
 													match (favorite, custom) {
 														(_, Some((_, custom))) => (
@@ -1657,7 +1655,8 @@ impl Picker {
 													)
 												};
 												if response.hovered() || response.has_focus() {
-													hovered = Some((image, name, code, is_animated));
+													hovered =
+														Some((image, name, code, is_animated));
 													hovered_source =
 														custom.map(|(g, _)| g.name.as_str());
 												}
@@ -1739,7 +1738,8 @@ impl Picker {
 														{
 															let custom_emoji =
 																custom.get(state, index);
-															let is_animated = custom_emoji.is_some_and(|(_, e)| e.animated);
+															let is_animated = custom_emoji
+																.is_some_and(|(_, e)| e.animated);
 															let (
 																image,
 																name,
@@ -1851,7 +1851,12 @@ impl Picker {
 															if response.hovered()
 																|| response.has_focus()
 															{
-																hovered = Some((image, name, code, is_animated));
+																hovered = Some((
+																	image,
+																	name,
+																	code,
+																	is_animated,
+																));
 																hovered_source =
 																	source.map(|g| g.name.as_str());
 															}
@@ -2765,11 +2770,8 @@ fn cell(
 				egui::pos2(rect.right() - 17.0, rect.bottom() - 11.0),
 				egui::vec2(15.0, 9.0),
 			);
-			ui.painter().rect_filled(
-				badge_rect,
-				2.0,
-				egui::Color32::from_black_alpha(160),
-			);
+			ui.painter()
+				.rect_filled(badge_rect, 2.0, egui::Color32::from_black_alpha(160));
 			ui.painter().text(
 				badge_rect.center(),
 				egui::Align2::CENTER_CENTER,

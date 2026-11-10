@@ -2626,7 +2626,14 @@ impl TimelineView {
 				.map(|m| {
 					let prior = previous;
 					let deleted = state.timeline.is_deleted(m.id);
-					let key = row_height_key(m, prior, self.unread_boundary, state, deleted, self.translation.height_key(m.id));
+					let key = row_height_key(
+						m,
+						prior,
+						self.unread_boundary,
+						state,
+						deleted,
+						self.translation.height_key(m.id),
+					);
 					previous = Some(m);
 					let lines = m
 						.content
@@ -3109,8 +3116,14 @@ impl TimelineView {
 					&& state.interactions.pending.is_none()
 					&& let Some(&(key, height)) = self.heights.get(&id)
 					&& key
-						== row_height_key(message, previous, self.unread_boundary, state, deleted, self.translation.height_key(id))
-				{
+						== row_height_key(
+							message,
+							previous,
+							self.unread_boundary,
+							state,
+							deleted,
+							self.translation.height_key(id),
+						) {
 					ui.add_space(height);
 					// Keep one result per row: visible height updates below zip by index.
 					measurements.push((id, key, height));
@@ -3803,7 +3816,9 @@ impl TimelineView {
 												);
 											}
 											// Auto-translate foreign messages if enabled
-											if self.translation.auto_translate && !message.content.trim().is_empty() {
+											if self.translation.auto_translate
+												&& !message.content.trim().is_empty()
+											{
 												if !crate::translation::TranslationManager::is_vietnamese_text(&message.content) {
 													self.translation.request_if_needed(id, &message.content);
 												}
@@ -3811,7 +3826,9 @@ impl TimelineView {
 											// Quick Translate Inline display
 											let mut hide_translation = false;
 											let mut retry_translation = false;
-											if let Some(status) = self.translation.translations.get(&id) {
+											if let Some(status) =
+												self.translation.translations.get(&id)
+											{
 												match status {
 													crate::translation::TranslationStatus::Loading => {
 														ui.add_space(2.0);
@@ -4531,13 +4548,14 @@ impl TimelineView {
 								.and_then(|channel| discord_url(channel, Some(id)));
 							let can_translate = !message.content.trim().is_empty();
 							let buttons = if react && !shift { 4 } else { 1 }
-								+ 3 + usize::from(own) + usize::from(can_translate) + if shift {
-								2 + usize::from(link.is_some())
-									+ usize::from(can_delete) + usize::from(can_mark_unread)
-									+ usize::from(can_pin)
-							} else {
-								0
-							};
+								+ 3 + usize::from(own) + usize::from(can_translate)
+								+ if shift {
+									2 + usize::from(link.is_some())
+										+ usize::from(can_delete) + usize::from(can_mark_unread)
+										+ usize::from(can_pin)
+								} else {
+									0
+								};
 							let width = buttons as f32 * 30.0;
 							let toolbar_rect = egui::Rect::from_min_size(
 								egui::pos2(
@@ -4657,12 +4675,8 @@ impl TimelineView {
 								} else {
 									"Dịch sang tiếng Việt"
 								};
-								if action_button(
-									&mut toolbar,
-									crate::icons::Icon::Globe,
-									tooltip,
-								)
-								.clicked()
+								if action_button(&mut toolbar, crate::icons::Icon::Globe, tooltip)
+									.clicked()
 								{
 									self.translation.toggle(id, &message.content);
 									self.heights.remove(&id);
@@ -4828,7 +4842,14 @@ impl TimelineView {
 				});
 				measurements.push((
 					id,
-					row_height_key(message, previous, self.unread_boundary, state, deleted, self.translation.height_key(id)),
+					row_height_key(
+						message,
+						previous,
+						self.unread_boundary,
+						state,
+						deleted,
+						self.translation.height_key(id),
+					),
 					response.response.rect.height(),
 				));
 			}

@@ -88,8 +88,7 @@ fn convert_shortcodes(draft: &mut String, state: &State, channel: Id) {
 						.map(|e| (guild, e))
 				});
 				if let Some((guild, emoji)) = found {
-					let can_send_native =
-						state.can_send_custom_emoji(channel, guild.id, emoji);
+					let can_send_native = state.can_send_custom_emoji(channel, guild.id, emoji);
 					if can_send_native {
 						result.push_str(&format!(
 							"<{}:{}:{}>",

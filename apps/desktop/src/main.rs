@@ -6817,10 +6817,9 @@ impl eframe::App for Desktop {
 			}
 			for (id, text) in self.messaging.take_translation_requests() {
 				if self.state.demo || self.fixture_only {
-					let _ = self.translation_tx.send((
-						id,
-						Ok((format!("[Bản dịch] {}", text), "en".to_string())),
-					));
+					let _ = self
+						.translation_tx
+						.send((id, Ok((format!("[Bản dịch] {}", text), "en".to_string()))));
 					ctx.request_repaint();
 				} else {
 					let client = self.translation_client.clone();

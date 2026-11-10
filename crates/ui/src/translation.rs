@@ -69,7 +69,9 @@ impl TranslationManager {
 			return false;
 		}
 		// Skip single standalone URLs
-		if (trimmed.starts_with("http://") || trimmed.starts_with("https://")) && !trimmed.contains(' ') {
+		if (trimmed.starts_with("http://") || trimmed.starts_with("https://"))
+			&& !trimmed.contains(' ')
+		{
 			return false;
 		}
 		// Must have at least one alphabetic character
@@ -204,8 +206,12 @@ mod tests {
 	#[test]
 	fn test_is_vietnamese_text() {
 		assert!(TranslationManager::is_vietnamese_text("Xin chào các bạn"));
-		assert!(TranslationManager::is_vietnamese_text("Tôi đang thử nghiệm"));
-		assert!(!TranslationManager::is_vietnamese_text("Hello world this is english"));
+		assert!(TranslationManager::is_vietnamese_text(
+			"Tôi đang thử nghiệm"
+		));
+		assert!(!TranslationManager::is_vietnamese_text(
+			"Hello world this is english"
+		));
 		assert!(!TranslationManager::is_vietnamese_text("안녕하세요"));
 	}
 
