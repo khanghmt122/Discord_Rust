@@ -6041,6 +6041,8 @@ impl eframe::App for Desktop {
 				std::mem::take(&mut input.raw.dropped_files),
 			)
 		});
+		ui::live_effects::set_voice_active(!self.messaging.voice_speaking.is_empty());
+		ui::live_effects::set_live_effects(self.messaging.live_particles, self.messaging.eye_glow);
 		ui::design::paint_backdrop(&ctx);
 		// A history page loading while browsing must not refuse a paste or drop.
 		let upload_allowed = self.state.user.is_some()

@@ -127,6 +127,7 @@ mod text_menu;
 mod thumbhash;
 #[cfg(feature = "demo")]
 pub use polls::debug_poll_check;
+pub mod live_effects;
 mod timeline;
 #[cfg(test)]
 mod title_bar_tests;
@@ -261,6 +262,8 @@ pub struct MessagingUi {
 	pub language: i18n::Language,
 	forwarding: forwarding::ForwardDialog,
 	pub auto_translate: bool,
+	pub live_particles: u8,
+	pub eye_glow: bool,
 	pub convert_emoticons: bool,
 	/// Device preference: request a conversation's page while the pointer rests on it.
 	pub preload_on_hover: bool,

@@ -32,6 +32,14 @@ fn parse_author_roles(raw: &str) -> std::result::Result<Vec<Id>, StoreError> {
 	Ok(roles)
 }
 pub struct LocalStore(Connection);
+const fn default_true() -> bool {
+	true
+}
+
+const fn default_sakura() -> u8 {
+	1
+}
+
 /// Device-local controls, bounded independently of account caches.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -50,6 +58,10 @@ pub struct AppPreferences {
 	pub convert_emoticons: bool,
 	#[serde(default)]
 	pub auto_translate: bool,
+	#[serde(default = "default_sakura")]
+	pub live_particles: u8,
+	#[serde(default = "default_true")]
+	pub eye_glow: bool,
 	/// Request a conversation's page while the pointer rests on it; older preferences enable it.
 	pub preload_on_hover: bool,
 	/// Show as Idle after 10 minutes of system inactivity; older preferences enable it.
@@ -120,6 +132,8 @@ impl Default for AppPreferences {
 			hide_nitro_emojis: false,
 			convert_emoticons: false,
 			auto_translate: false,
+			live_particles: 1,
+			eye_glow: true,
 			preload_on_hover: true,
 			auto_idle: true,
 			hide_title_bar: false,

@@ -1129,6 +1129,40 @@ impl MessagingUi {
 				}
 			},
 		);
+		design::group(
+			ui,
+			"Hiệu ứng Đồ họa Động (Live Shader & Particles)",
+			|ui| {
+				design::switch(
+					ui,
+					"Mắt Gojo phát sáng (Infinity Eye Glow)",
+					Some(
+						"Lục Nhãn phát sáng nhấp nháy theo nhịp thở và bùng sáng theo giọng nói/nhịp voice",
+					),
+					&mut self.eye_glow,
+				);
+				design::card_divider(ui);
+				design::row(
+					ui,
+					"Hiệu ứng hạt rơi trên nền (Background Particles)",
+					Some("Chuyển động mượt 60fps sau lớp cửa sổ và tin nhắn chat"),
+					|ui| {
+						ui.horizontal(|ui| {
+							for (val, label) in
+								[(0, "Tắt"), (1, "🌸 Hoa anh đào"), (2, "❄️ Tuyết rơi")]
+							{
+								if ui
+									.selectable_label(self.live_particles == val, label)
+									.clicked()
+								{
+									self.live_particles = val;
+								}
+							}
+						});
+					},
+				);
+			},
+		);
 		self.cosmetic_settings(ui);
 		self.layout_settings(ui, demo);
 	}

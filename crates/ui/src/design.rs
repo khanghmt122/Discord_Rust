@@ -486,6 +486,8 @@ pub fn set_background_image(ctx: &egui::Context, image: Option<std::sync::Arc<eg
 	BACKGROUND_IMAGE.with(|current| {
 		let mut current = current.borrow_mut();
 		if let Some(image) = image {
+			let is_gojo = crate::live_effects::detect_gojo_eye(&image);
+			crate::live_effects::set_is_gojo(is_gojo);
 			if image
 				.size
 				.iter()
@@ -507,6 +509,7 @@ pub fn set_background_image(ctx: &egui::Context, image: Option<std::sync::Arc<eg
 			);
 			*current = Some((image, texture));
 		} else {
+			crate::live_effects::set_is_gojo(false);
 			*current = None;
 		}
 	});
@@ -969,6 +972,7 @@ pub fn paint_backdrop(ctx: &egui::Context) {
 	mesh.add_triangle(0, 2, 3);
 	ctx.layer_painter(egui::LayerId::background())
 		.add(egui::Shape::mesh(mesh));
+	let mut bg_rect = None;
 	BACKGROUND_IMAGE.with(|image| {
 		if let Some((_, texture)) = image.borrow().as_ref() {
 			let background = EXTENSION_THEME
@@ -978,6 +982,13 @@ pub fn paint_backdrop(ctx: &egui::Context) {
 			if background.target != extensions::BackgroundTarget::Window {
 				return;
 			}
+			let size = texture.size_vec2();
+			let ratio = rect.size() / size;
+			let scale = match background.fit {
+				extensions::BackgroundFit::Cover => ratio.x.max(ratio.y),
+				extensions::BackgroundFit::Contain => ratio.x.min(ratio.y),
+			};
+			bg_rect = Some(egui::Rect::from_center_size(rect.center(), size * scale));
 			paint_background_image(
 				&ctx.layer_painter(egui::LayerId::background()),
 				rect,
@@ -986,6 +997,7 @@ pub fn paint_backdrop(ctx: &egui::Context) {
 			);
 		}
 	});
+	crate::live_effects::paint_live_effects(ctx, rect, bg_rect);
 }
 
 pub const SEMIBOLD: &str = "semibold";
