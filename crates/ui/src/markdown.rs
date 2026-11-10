@@ -1947,11 +1947,17 @@ impl Formatted {
 								render.source,
 							)
 						});
-						let response = if let Some(asset) =
-							model::ImageShare::from_url(url).filter(|_| label != *url)
-						{
+						let response = if let Some(asset) = model::ImageShare::from_url(url) {
+							let display_label = if label != *url {
+								label.clone()
+							} else {
+								match asset {
+									model::ImageShare::Emoji { .. } => "emoji".to_owned(),
+									model::ImageShare::Sticker { .. } => "sticker".to_owned(),
+								}
+							};
 							Self::show_emoji(
-								&[(label.clone(), Style::default())],
+								&[(display_label, Style::default())],
 								ui,
 								true,
 								false,

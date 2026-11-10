@@ -53,6 +53,7 @@ pub mod emoji;
 mod emoji_details;
 mod emoji_picker;
 mod emoticons;
+pub(crate) mod nitro;
 pub mod fonts;
 pub mod i18n;
 #[cfg(all(debug_assertions, feature = "demo"))]
@@ -2885,23 +2886,40 @@ impl MessagingUi {
 		if self.upload_busy || self.image_share_requested.is_some() || !state.can_send(channel) {
 			return;
 		}
-		let draft = state.drafts.get(&channel).map_or("", String::as_str);
+		let raw_draft = state.drafts.get(&channel).map_or("", String::as_str);
+		let converted_draft = nitro::convert_draft(raw_draft, state, channel);
 		if self.selected_files().is_empty()
-			&& let Some(assets) = model::ImageShare::markdown_only(draft)
+			&& let Some(assets) = model::ImageShare::markdown_only(&converted_draft)
 		{
-			if !state.can_attach(channel) {
-				state.status =
-					"Attaching images is unavailable here; add text to send a named link.";
+			if state.can_attach(channel) {
+				self.image_share_requested =
+					Some((state.generation, channel, assets, converted_draft.clone()));
+				state.drafts.insert(channel, converted_draft);
+				return;
+			} else {
+				let link_content = assets
+					.iter()
+					.filter_map(|a| a.url())
+					.collect::<Vec<_>>()
+					.join(" ");
+				state.drafts.insert(channel, link_content);
+				if let Some(command) = state.prepare_send_with_attachments(&[]) {
+					self.stage_pending_upload(ctx, &command);
+					self.timeline.follow_latest(state);
+					commands.push(command);
+				}
 				return;
 			}
-			self.image_share_requested =
-				Some((state.generation, channel, assets, draft.to_owned()));
-			return;
 		}
+		let unmasked = nitro::unmask_artwork_links(&converted_draft);
 		let original_draft = if self.convert_emoticons {
 			state.drafts.get_mut(&channel).map(|draft| {
-				let converted = emoticons::convert(draft);
+				let converted = emoticons::convert(&unmasked);
 				std::mem::replace(draft, converted)
+			})
+		} else if unmasked != raw_draft {
+			state.drafts.get_mut(&channel).map(|draft| {
+				std::mem::replace(draft, unmasked.clone())
 			})
 		} else {
 			None
@@ -3701,7 +3719,41 @@ impl MessagingUi {
                             self.reaction_picker.dismiss(state, commands);
                         }
                         let pick = match pick {
-                            Some(emoji_picker::Pick::Insert(text)) => Some(text),
+                            Some(emoji_picker::Pick::Insert(text)) => {
+                                if let Some(assets) = model::ImageShare::markdown_only(&text)
+                                    && assets.iter().any(|a| matches!(a, model::ImageShare::Sticker { .. }))
+                                {
+                                    if editing_here {
+                                        state.status = "Finish or cancel the edit before sending a sticker.";
+                                    } else if self.upload_busy || self.image_share_requested.is_some() {
+                                        state.status = "Wait for the upload before sending a sticker.";
+                                    } else if !state.can_send(channel) {
+                                        state.status = "Sending is unavailable with the current connection or permissions";
+                                    } else if state.can_attach(channel) {
+                                        self.image_share_requested =
+                                            Some((state.generation, channel, assets, text));
+                                        self.timeline.follow_latest(state);
+                                    } else if let Some(url) = assets[0].url() {
+                                        let saved = state.drafts.insert(channel, url);
+                                        let command = state.prepare_send();
+                                        match saved {
+                                            Some(saved) => {
+                                                state.drafts.insert(channel, saved);
+                                            }
+                                            None => {
+                                                state.drafts.remove(&channel);
+                                            }
+                                        }
+                                        if let Some(command) = command {
+                                            self.timeline.follow_latest(state);
+                                            commands.push(command);
+                                        }
+                                    }
+                                    None
+                                } else {
+                                    Some(text)
+                                }
+                            },
                             Some(emoji_picker::Pick::React(_, _) | emoji_picker::Pick::Choose(_)) => None,
                             Some(emoji_picker::Pick::Sticker(sticker)) => {
                                 if editing_here { state.status = "Finish or cancel the edit before sending a sticker."; }
@@ -10386,7 +10438,8 @@ pub fn debug_image_sharing(state: &mut State) -> (Vec<model::ImageShare>, String
 		"picking and rendering never sends"
 	);
 	view.submit_composer(state, &ctx, &mut commands);
-	assert!(matches!(commands.as_slice(), [Command::Send { content, .. }] if content == &mixed));
+	let expected = nitro::unmask_artwork_links(&mixed);
+	assert!(matches!(commands.as_slice(), [Command::Send { content, .. }] if content == &expected));
 	assert!(state.pending.last().unwrap().attachments.is_empty());
 	state.pending.clear();
 	commands.clear();
