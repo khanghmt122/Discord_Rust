@@ -264,6 +264,16 @@ pub struct MessagingUi {
 	pub auto_translate: bool,
 	pub live_particles: u8,
 	pub eye_glow: bool,
+	/// Compact Mini Dock mode (bong bóng chat & voice dọc mép màn hình).
+	pub mini_dock: bool,
+	/// Whether the Mini Dock window is pinned Always-on-Top.
+	pub mini_dock_pinned: bool,
+	/// Notifies runtime that Mini Dock state changed to resize window.
+	pub mini_dock_toggled: bool,
+	/// Notifies runtime that Mini Dock pinned state changed.
+	pub mini_dock_pinned_toggled: bool,
+	/// Stores window size before entering Mini Dock to restore on exit.
+	pub pre_dock_size: Option<egui::Vec2>,
 	pub convert_emoticons: bool,
 	/// Device preference: request a conversation's page while the pointer rests on it.
 	pub preload_on_hover: bool,
@@ -682,6 +692,29 @@ impl MessagingUi {
 	/// Receives an asynchronous translation result from the desktop runtime.
 	pub fn receive_translation(&mut self, id: Id, result: Result<(String, String), String>) {
 		self.timeline.receive_translation(id, result);
+	}
+
+	/// Toggles Mini Dock (bong bóng chat & voice dọc mép màn hình).
+	pub fn toggle_mini_dock(&mut self, ctx: &egui::Context) {
+		self.mini_dock = !self.mini_dock;
+		self.mini_dock_toggled = true;
+		ctx.request_repaint();
+	}
+
+	/// Toggles Always-on-Top pinning for Mini Dock.
+	pub fn toggle_mini_dock_pinned(&mut self, ctx: &egui::Context) {
+		self.mini_dock_pinned = !self.mini_dock_pinned;
+		self.mini_dock_pinned_toggled = true;
+		ctx.request_repaint();
+	}
+
+	/// Sets Mini Dock mode explicitly.
+	pub fn set_mini_dock(&mut self, enabled: bool, ctx: &egui::Context) {
+		if self.mini_dock != enabled {
+			self.mini_dock = enabled;
+			self.mini_dock_toggled = true;
+			ctx.request_repaint();
+		}
 	}
 
 	pub fn interaction_modal_id(&self) -> Option<Id> {
@@ -1278,6 +1311,9 @@ impl MessagingUi {
 			startup_graphics_api: self.startup_graphics_api,
 			available_graphics_apis: std::mem::take(&mut self.available_graphics_apis),
 			graphics_api_env_override: self.graphics_api_env_override,
+			mini_dock: self.mini_dock,
+			mini_dock_pinned: self.mini_dock_pinned,
+			pre_dock_size: self.pre_dock_size,
 			..Self::default()
 		};
 		self.timeline.video.fullscreen_request = video_fullscreen_request;
@@ -2717,6 +2753,15 @@ impl MessagingUi {
 							commands.push(state.history(None));
 							self.timeline.follow_latest(state);
 						}
+					}
+					let dock_btn = icons::button(
+						ui,
+						icons::Icon::DeviceMobile,
+						32.0,
+						"Thu nhỏ thành Mini Dock (Bong bóng chat & voice)",
+					);
+					if dock_btn.clicked() {
+						self.toggle_mini_dock(ui.ctx());
 					}
 				}
 				if let Some(channel) = state.selected.filter(|_| {
@@ -4244,7 +4289,433 @@ impl MessagingUi {
 			.hline(line, y, egui::Stroke::new(1.0, colors.border));
 		ui.add_space(6.0);
 	}
+	/// Renders the compact Mini Dock / Chat Bubble & Voice mode.
+	fn show_mini_dock(
+		&mut self,
+		ui: &mut egui::Ui,
+		state: &mut State,
+		ctx: &egui::Context,
+		commands: &mut Vec<Command>,
+	) {
+		let colors = design::palette(ui);
+		let background = design::window_palette(ui);
+
+		// 1. Mini Dock Header (window drag, channel name, Pin toggle, Expand button)
+		self.mini_dock_header(ui, state, ctx, commands);
+
+		// 2. Voice Call Bubbles (live participants, speaking rings, mute/deaf badges)
+		self.mini_dock_voice_bubbles(ui, state, commands);
+
+		// 3. Compact Composer at the bottom
+		if let Some(channel) = state.selected {
+			egui::Panel::bottom("mini-dock-composer")
+				.show_separator_line(false)
+				.frame(
+					egui::Frame::new()
+						.fill(if design::has_section_background(ui) {
+							design::section_surface(
+								ui,
+								background.chat,
+								design::ImageSection::Composer,
+							)
+						} else {
+							egui::Color32::TRANSPARENT
+						})
+						.inner_margin(egui::Margin {
+							left: 8,
+							right: 8,
+							top: 2,
+							bottom: 6,
+						}),
+				)
+				.show(ui, |ui| {
+					if state.message_request(channel) {
+						self.message_request_bar(ui, state, channel);
+					}
+					self.composer(ui, state, channel, ctx, commands);
+				});
+		}
+
+		// 4. Central Chat Stream
+		if state.selected.is_none() {
+			ui.add_space(32.0);
+			ui.vertical_centered(|ui| {
+				ui.label(design::semibold(ui, "Serein Mini Dock", 16.0).color(colors.text_strong));
+				ui.add_space(8.0);
+				ui.label(
+					RichText::new("Chưa chọn cuộc trò chuyện nào")
+						.size(13.0)
+						.color(colors.muted),
+				);
+				ui.add_space(12.0);
+				if ui.button("🔍 Mở chuyển kênh nhanh (Ctrl+K)").clicked() {
+					self.switcher.open(ctx);
+				}
+			});
+			return;
+		}
+
+		design::paint_chat_background(ui, ui.available_rect_before_wrap());
+		self.timeline.hide_media_links = self.reading_preferences.hide_media_links;
+		self.timeline.compact_messages = self.reading_preferences.compact_messages;
+		self.timeline.double_click_reaction = self
+			.reading_preferences
+			.double_click_reaction_enabled
+			.then_some(self.reading_preferences.double_click_emoji());
+		self.timeline.instant_scrolling = !self.reading_preferences.smooth_scrolling;
+		self.timeline.extension_actions = self.extensions.message_actions();
+		self.timeline.quick_reactions = Some(self.reaction_picker.quick_reactions(state));
+		self.timeline.translation.auto_translate = self.auto_translate;
+
+		let mut seen = std::collections::BTreeSet::new();
+		let author_lookup: Vec<_> = state
+			.timeline
+			.iter()
+			.rev()
+			.filter(|message| !message.author.webhook)
+			.map(|message| message.author.id)
+			.filter(|id| seen.insert(*id))
+			.take(client_core::member_search::LIMIT)
+			.collect();
+		if let Some(command) = state.request_author_members(&author_lookup) {
+			commands.push(command);
+		}
+
+		self.timeline.show_with_scroll(
+			ui,
+			state,
+			&mut self.editing,
+			&mut self.deleting,
+			(&mut self.avatars, &mut self.profile),
+			self.pending_upload.as_ref(),
+			&mut self.scroll,
+		);
+
+		if let Some((id, action)) = self.timeline.poll_action.take()
+			&& let Some(command) = state.prepare_poll(Some(id), action)
+		{
+			commands.push(command);
+		}
+		if let Some(id) = self.timeline.sticker_request.take() {
+			if let Some(command) = state.request_sticker(id) {
+				commands.push(command);
+			}
+			if let Some(command) = state.request_sticker_packs() {
+				commands.push(command);
+			}
+		}
+		if let Some(sticker) = self.timeline.browse_sticker.take() {
+			self.emoji_picker.open_stickers(Some(&sticker));
+		}
+		if let Some(command) = state.request_author_members(&self.timeline.visible_authors) {
+			commands.push(command);
+		}
+		if let Some((action, text, target)) = self.timeline.extension_request.take() {
+			self.extensions
+				.invoke_message(action, text, target, state, ui.ctx());
+		}
+		if let Some((message, anchor, trigger)) = self.timeline.reaction_picker.take() {
+			self.emoji_picker.dismiss(state, commands);
+			self.reaction_picker
+				.open_reaction(state, message, anchor, trigger);
+		}
+		self.reaction_picker.hide_nitro_emojis = self.hide_nitro_emojis;
+		self.reaction_picker
+			.show_reaction(ui, state, &mut self.avatars, commands);
+	}
+
+	/// Compact Mini Dock header with channel name, quick switcher access, Pin toggle, and Expand button.
+	fn mini_dock_header(
+		&mut self,
+		ui: &mut egui::Ui,
+		state: &mut State,
+		ctx: &egui::Context,
+		_commands: &mut Vec<Command>,
+	) {
+		let colors = design::palette(ui);
+		let channel = state.selected.and_then(|id| state.channel(id)).cloned();
+
+		let header_response = ui.allocate_ui_with_layout(
+			egui::vec2(ui.available_width(), 36.0),
+			egui::Layout::left_to_right(egui::Align::Center),
+			|ui| {
+				let full_rect = ui.max_rect();
+				design::window_drag(ui, full_rect);
+
+				ui.spacing_mut().item_spacing.x = 6.0;
+				ui.add_space(4.0);
+
+				// Channel icon
+				let icon = match channel.as_ref().map(|c| c.kind) {
+					Some(2 | 13) => icons::Icon::Speaker,
+					Some(1 | 3) => icons::Icon::People,
+					_ => icons::Icon::Hash,
+				};
+				icons::inline(ui, icon, 16.0, colors.muted);
+
+				// Channel name button
+				let name = channel.as_ref().map_or("Serein", |c| c.name.as_str());
+				let title_btn = ui.add(
+					egui::Button::new(design::semibold(ui, name, 13.5).color(colors.text_strong))
+						.frame(false)
+						.truncate(),
+				);
+				if title_btn
+					.on_hover_text("Bấm để đổi kênh nhanh (Quick Switcher · Ctrl+K)")
+					.clicked()
+				{
+					self.switcher.open(ctx);
+				}
+
+				// Right side controls: Pin Always-on-Top & Restore full window
+				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+					ui.add_space(2.0);
+
+					// Restore full window
+					let restore_btn = icons::button(
+						ui,
+						icons::Icon::Fullscreen,
+						28.0,
+						"Khôi phục cửa sổ lớn (Thoát Mini Dock)",
+					);
+					if restore_btn.clicked() {
+						self.mini_dock = false;
+						self.mini_dock_toggled = true;
+						ctx.request_repaint();
+					}
+
+					// Pin Always-on-Top toggle
+					let pin_label = if self.mini_dock_pinned {
+						"Bỏ ghim (Đang ghim trên cùng Always-on-Top)"
+					} else {
+						"Ghim trên cùng màn hình (Always-on-Top)"
+					};
+					let pin_btn =
+						icons::toggle(ui, icons::Icon::Pin, 28.0, self.mini_dock_pinned, pin_label);
+					if pin_btn.clicked() {
+						self.mini_dock_pinned = !self.mini_dock_pinned;
+						self.mini_dock_pinned_toggled = true;
+						ctx.request_repaint();
+					}
+				});
+			},
+		);
+
+		ui.painter().hline(
+			ui.max_rect().x_range(),
+			header_response.response.rect.bottom(),
+			egui::Stroke::new(1.0, colors.border.gamma_multiply(0.4)),
+		);
+	}
+
+	/// Renders the voice call bubble bar showing live avatars, animated green speaking rings, and mute controls.
+	fn mini_dock_voice_bubbles(
+		&mut self,
+		ui: &mut egui::Ui,
+		state: &mut State,
+		commands: &mut Vec<Command>,
+	) {
+		let colors = design::palette(ui);
+		let voice_channel = state
+			.selected
+			.and_then(|id| state.channel(id))
+			.filter(|c| matches!(c.kind, 2 | 13))
+			.map(|c| c.id);
+		let is_active = state.voice.active.is_some();
+		if !is_active {
+			if let Some(chan_id) = voice_channel {
+				ui.add_space(2.0);
+				egui::Frame::new()
+					.fill(colors.raised.gamma_multiply(0.5))
+					.corner_radius(6)
+					.inner_margin(egui::Margin::symmetric(8, 4))
+					.show(ui, |ui| {
+						ui.horizontal(|ui| {
+							icons::inline(ui, icons::Icon::Speaker, 16.0, colors.muted);
+							ui.label(
+								RichText::new("Phòng thoại")
+									.size(12.0)
+									.color(colors.text_strong),
+							);
+							ui.with_layout(
+								egui::Layout::right_to_left(egui::Align::Center),
+								|ui| {
+									if ui.button("🔊 Vào voice").clicked() {
+										self.request_call(state, chan_id, false, commands);
+									}
+								},
+							);
+						});
+					});
+				ui.add_space(2.0);
+			}
+			return;
+		}
+
+		let (channel_id, guild, participants) = {
+			let call = state.voice.active.as_ref().unwrap();
+			(call.channel, call.guild, call.participants.clone())
+		};
+		let channel_name = state
+			.channel(channel_id)
+			.map_or_else(|| "Phòng thoại".to_string(), |c| c.name.clone());
+
+		let entries: Vec<client_core::voice::RosterEntry> = if guild.is_none() {
+			participants
+				.iter()
+				.map(|p| client_core::voice::RosterEntry {
+					guild: model::Id(0),
+					channel: channel_id,
+					participant: *p,
+					member: None,
+				})
+				.collect()
+		} else {
+			state
+				.voice
+				.roster
+				.iter()
+				.filter(|entry| entry.channel == channel_id)
+				.cloned()
+				.collect()
+		};
+
+		ui.add_space(2.0);
+		egui::Frame::new()
+			.fill(colors.raised.gamma_multiply(0.85))
+			.corner_radius(8)
+			.stroke(egui::Stroke::new(1.0, colors.border.gamma_multiply(0.5)))
+			.inner_margin(egui::Margin::symmetric(8, 6))
+			.show(ui, |ui| {
+				// Voice header with channel name & controls
+				ui.horizontal(|ui| {
+					ui.spacing_mut().item_spacing.x = 4.0;
+					icons::inline(ui, icons::Icon::Speaker, 16.0, colors.positive);
+					ui.add(
+						egui::Label::new(
+							design::semibold(ui, channel_name, 12.5).color(colors.text_strong),
+						)
+						.truncate(),
+					);
+
+					ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+						// Disconnect button
+						let leave = ui.add(
+							egui::Button::new(RichText::new("📞✕").size(12.0).color(colors.danger))
+								.frame(false),
+						);
+						if leave.on_hover_text("Rời phòng thoại").clicked() {
+							if let Some(cmd) = state.leave_call() {
+								commands.push(cmd);
+							}
+						}
+
+						// Deafen toggle
+						self.mute_toggle(ui, state, commands, true, 20.0);
+
+						// Mute toggle
+						self.mute_toggle(ui, state, commands, false, 20.0);
+					});
+				});
+
+				ui.add_space(4.0);
+
+				// Avatar bubbles row
+				let mut has_speaking = false;
+				egui::ScrollArea::horizontal()
+					.id_salt("mini_dock_voice_bubbles")
+					.show(ui, |ui| {
+						ui.horizontal(|ui| {
+							ui.spacing_mut().item_spacing.x = 6.0;
+
+							for entry in &entries {
+								let (user, name) = crate::voice::resolve_member(state, entry);
+								let speaking =
+									self.is_speaking(state, channel_id, &entry.participant);
+								if speaking {
+									has_speaking = true;
+								}
+
+								let avatar_size = 30.0;
+								let response = match user {
+									Some(user) => {
+										self.avatars.show_quiet(ui, user, avatar_size, state.demo)
+									}
+									None => {
+										let (rect, res) = ui.allocate_exact_size(
+											egui::Vec2::splat(avatar_size),
+											egui::Sense::hover(),
+										);
+										design::paint_avatar(ui, name, avatar_size, rect);
+										res
+									}
+								};
+
+								if speaking {
+									crate::voice::speaking_avatar(ui, &response, name);
+								}
+
+								let shown = crate::voice::shown_participant(state, entry);
+								if shown.deafened || shown.server_deafened {
+									let badge_rect = egui::Rect::from_center_size(
+										response.rect.right_bottom() - egui::vec2(3.0, 3.0),
+										egui::vec2(12.0, 12.0),
+									);
+									ui.painter().circle_filled(
+										badge_rect.center(),
+										6.5,
+										colors.raised,
+									);
+									icons::paint(
+										ui.painter(),
+										icons::Icon::HeadphonesSlash,
+										badge_rect,
+										colors.danger,
+									);
+								} else if shown.muted || shown.server_muted {
+									let badge_rect = egui::Rect::from_center_size(
+										response.rect.right_bottom() - egui::vec2(3.0, 3.0),
+										egui::vec2(12.0, 12.0),
+									);
+									ui.painter().circle_filled(
+										badge_rect.center(),
+										6.5,
+										colors.raised,
+									);
+									icons::paint(
+										ui.painter(),
+										icons::Icon::MicrophoneSlash,
+										badge_rect,
+										colors.danger,
+									);
+								}
+
+								let mut status = String::new();
+								if speaking {
+									status.push_str(" · Đang nói 🟢");
+								}
+								if shown.deafened || shown.server_deafened {
+									status.push_str(" · Đã điếc 🔇");
+								} else if shown.muted || shown.server_muted {
+									status.push_str(" · Đã tắt mic 🎙️✕");
+								}
+								response.on_hover_text(format!("{name}{status}"));
+							}
+						});
+					});
+
+				if has_speaking {
+					ui.ctx()
+						.request_repaint_after(std::time::Duration::from_millis(33));
+				}
+			});
+		ui.add_space(2.0);
+	}
+
 	fn shows_title_bar(&self) -> bool {
+		if self.mini_dock {
+			return false;
+		}
 		if cfg!(target_os = "linux") {
 			self.uses_custom_title_bar()
 		} else {
@@ -4872,90 +5343,94 @@ impl MessagingUi {
 		// See-through chrome paints each section once; a shared column coat would stack under
 		// the rail and account strip and make them denser than the title bar.
 		let layered = design::layered_sections(ui);
-		let navigation = egui::Panel::left("navigation")
-			.resizable(true)
-			.show_separator_line(!design::has_window_background(ui))
-			.default_size(rail + f32::from(self.reading_preferences.sidebar_width).min(sidebar_max))
-			.size_range(rail + 190.0..=rail + sidebar_max)
-			.frame(
-				egui::Frame::new()
-					.fill(if layered {
-						egui::Color32::TRANSPARENT
-					} else {
-						background.base
-					})
-					.inner_margin(0),
-			)
-			.show(ui, |ui| {
-				egui::Panel::bottom("account-footer")
-					.show_separator_line(false)
-					.frame(
-						egui::Frame::new()
-							// Over a window image the card's strip continues the channel list;
-							// over desktop transparency it is the rail's material, like the title bar.
-							.fill(if design::has_window_background(ui) {
-								design::section_surface(
-									ui,
-									background.sidebar,
-									design::ImageSection::ChannelList,
-								)
-							} else if layered {
-								design::section_surface(
-									ui,
-									background.base,
-									design::ImageSection::ServerList,
-								)
-							} else {
-								egui::Color32::TRANSPARENT
-							})
-							.inner_margin(egui::Margin {
-								left: 8,
-								right: 8,
-								top: 8,
-								bottom: 8,
-							}),
-					)
-					.show(ui, |ui| self.account_card(ui, state, &mut commands));
-				self.notification_rail(ui, state, &mut commands);
-				// The lists sit on their own rounded surface beside the rail, above the card.
-				let lists = ui.available_rect_before_wrap();
-				// A window image continues the lists into the card strip, so only it stays square.
-				let rounded = !design::has_window_background(ui);
-				ui.painter().rect_filled(
-					lists,
-					if rounded {
-						egui::CornerRadius {
-							nw: 8,
-							sw: 8,
-							..Default::default()
-						}
-					} else {
-						egui::CornerRadius::ZERO
-					},
-					design::section_surface(
-						ui,
-						background.sidebar,
-						design::ImageSection::ChannelList,
-					),
-				);
-				if rounded && layered {
-					// No column coat sits under the corners, so the rail's material fills the
-					// notches and the curve still reads from the title bar into the account strip.
-					let notch = design::section_surface(
-						ui,
-						background.base,
-						design::ImageSection::ServerList,
+		if !self.mini_dock {
+			let navigation = egui::Panel::left("navigation")
+				.resizable(true)
+				.show_separator_line(!design::has_window_background(ui))
+				.default_size(
+					rail + f32::from(self.reading_preferences.sidebar_width).min(sidebar_max),
+				)
+				.size_range(rail + 190.0..=rail + sidebar_max)
+				.frame(
+					egui::Frame::new()
+						.fill(if layered {
+							egui::Color32::TRANSPARENT
+						} else {
+							background.base
+						})
+						.inner_margin(0),
+				)
+				.show(ui, |ui| {
+					egui::Panel::bottom("account-footer")
+						.show_separator_line(false)
+						.frame(
+							egui::Frame::new()
+								// Over a window image the card's strip continues the channel list;
+								// over desktop transparency it is the rail's material, like the title bar.
+								.fill(if design::has_window_background(ui) {
+									design::section_surface(
+										ui,
+										background.sidebar,
+										design::ImageSection::ChannelList,
+									)
+								} else if layered {
+									design::section_surface(
+										ui,
+										background.base,
+										design::ImageSection::ServerList,
+									)
+								} else {
+									egui::Color32::TRANSPARENT
+								})
+								.inner_margin(egui::Margin {
+									left: 8,
+									right: 8,
+									top: 8,
+									bottom: 8,
+								}),
+						)
+						.show(ui, |ui| self.account_card(ui, state, &mut commands));
+					self.notification_rail(ui, state, &mut commands);
+					// The lists sit on their own rounded surface beside the rail, above the card.
+					let lists = ui.available_rect_before_wrap();
+					// A window image continues the lists into the card strip, so only it stays square.
+					let rounded = !design::has_window_background(ui);
+					ui.painter().rect_filled(
+						lists,
+						if rounded {
+							egui::CornerRadius {
+								nw: 8,
+								sw: 8,
+								..Default::default()
+							}
+						} else {
+							egui::CornerRadius::ZERO
+						},
+						design::section_surface(
+							ui,
+							background.sidebar,
+							design::ImageSection::ChannelList,
+						),
 					);
-					for (corner, inward) in [
-						(lists.left_top(), egui::vec2(1.0, 1.0)),
-						(lists.left_bottom(), egui::vec2(1.0, -1.0)),
-					] {
-						design::paint_corner_notch(ui.painter(), corner, inward, 8.0, notch);
+					if rounded && layered {
+						// No column coat sits under the corners, so the rail's material fills the
+						// notches and the curve still reads from the title bar into the account strip.
+						let notch = design::section_surface(
+							ui,
+							background.base,
+							design::ImageSection::ServerList,
+						);
+						for (corner, inward) in [
+							(lists.left_top(), egui::vec2(1.0, 1.0)),
+							(lists.left_bottom(), egui::vec2(1.0, -1.0)),
+						] {
+							design::paint_corner_notch(ui.painter(), corner, inward, 8.0, notch);
+						}
 					}
-				}
-				self.sidebar(ui, state, &title, &mut commands);
-			});
-		self.record_reading_sidebar(navigation.response.rect.width() - rail);
+					self.sidebar(ui, state, &title, &mut commands);
+				});
+			self.record_reading_sidebar(navigation.response.rect.width() - rail);
+		}
 		if self.channel_preferences_changed {
 			self.channel_cache.invalidate();
 		}
@@ -5032,7 +5507,7 @@ impl MessagingUi {
 			} else {
 				self.members_narrow_open
 			};
-		if search_open {
+		if !self.mini_dock && search_open {
 			self.channel_header(
 				ui,
 				state,
@@ -5084,7 +5559,9 @@ impl MessagingUi {
 		if dm_recipient.is_none() {
 			self.dm_profile_link = None;
 		}
-		if let Some(recipient) = &dm_recipient {
+		if !self.mini_dock
+			&& let Some(recipient) = &dm_recipient
+		{
 			self.channel_header(
 				ui,
 				state,
@@ -5098,7 +5575,7 @@ impl MessagingUi {
 			if state.members.is_some() {
 				commands.push(state.close_members());
 			}
-		} else if show_members {
+		} else if !self.mini_dock && show_members {
 			if state
 				.members
 				.as_ref()
@@ -5159,6 +5636,10 @@ impl MessagingUi {
 					.inner_margin(0),
 			)
 			.show(ui, |ui| {
+				if self.mini_dock {
+					self.show_mini_dock(ui, state, &ctx, &mut commands);
+					return;
+				}
 				let message_surface =
 					design::section_surface(ui, background.chat, design::ImageSection::MessageList);
 				if design::has_section_background(ui)
@@ -6099,6 +6580,54 @@ mod composer_tests {
 		assert_eq!(ui.diagnostics_log, diagnostics::Level::Info);
 		assert_eq!(ui.diagnostics_log_path.as_deref(), Some("local-log"));
 		assert!(!ui.open_log_folder_requested);
+	}
+
+	#[test]
+	fn mini_dock_mode_toggles_and_preserves_geometry() {
+		let ctx = egui::Context::default();
+		let mut view = MessagingUi::default();
+		assert!(!view.mini_dock);
+		assert!(!view.mini_dock_pinned);
+
+		// Toggle mini dock on
+		view.toggle_mini_dock(&ctx);
+		assert!(view.mini_dock);
+		assert!(view.mini_dock_toggled);
+		view.mini_dock_toggled = false;
+
+		// Toggle pin on
+		view.toggle_mini_dock_pinned(&ctx);
+		assert!(view.mini_dock_pinned);
+		assert!(view.mini_dock_pinned_toggled);
+		view.mini_dock_pinned_toggled = false;
+
+		// Frame render with mini dock active
+		let mut state = edit_state();
+		let output = ctx.run_ui(
+			egui::RawInput {
+				screen_rect: Some(egui::Rect::from_min_size(
+					egui::Pos2::ZERO,
+					egui::vec2(340.0, 600.0),
+				)),
+				..Default::default()
+			},
+			|ui| {
+				let _ = view.show(ui, &mut state);
+			},
+		);
+		output.drop_without_applying_deltas();
+
+		// Clear preserves mini dock preferences
+		view.pre_dock_size = Some(egui::vec2(1200.0, 800.0));
+		view.clear();
+		assert!(view.mini_dock);
+		assert!(view.mini_dock_pinned);
+		assert_eq!(view.pre_dock_size, Some(egui::vec2(1200.0, 800.0)));
+
+		// Toggle mini dock off
+		view.set_mini_dock(false, &ctx);
+		assert!(!view.mini_dock);
+		assert!(view.mini_dock_toggled);
 	}
 
 	#[test]

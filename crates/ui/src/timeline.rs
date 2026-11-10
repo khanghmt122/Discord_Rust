@@ -3883,9 +3883,19 @@ impl TimelineView {
 																	}
 																});
 															});
+															let display_text = {
+																let mut text = translated.clone();
+																for user in &message.mentions {
+																	let tag1 = format!("<@{}>", user.id.0);
+																	let tag2 = format!("<@!{}>", user.id.0);
+																	let name = format!("@{}", user.name);
+																	text = text.replace(&tag1, &name).replace(&tag2, &name);
+																}
+																text
+															};
 															ui.add_space(2.0);
 															ui.label(
-																RichText::new(translated)
+																RichText::new(display_text)
 																	.size(13.5)
 																	.color(colors.text),
 															);

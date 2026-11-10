@@ -388,7 +388,12 @@ impl MessagingUi {
 			});
 	}
 
-	fn is_speaking(&self, state: &State, channel: Id, participant: &Participant) -> bool {
+	pub(crate) fn is_speaking(
+		&self,
+		state: &State,
+		channel: Id,
+		participant: &Participant,
+	) -> bool {
 		!inactive_recipient(state, channel, participant.user)
 			&& !self.voice_user_locally_muted(participant.user)
 			&& !participant.muted
@@ -4358,7 +4363,7 @@ fn ringing_pulse(ui: &egui::Ui, avatar: egui::Rect) {
 		.request_repaint_after(std::time::Duration::from_millis(33));
 }
 
-fn speaking_avatar(ui: &egui::Ui, avatar: &egui::Response, name: &str) {
+pub(crate) fn speaking_avatar(ui: &egui::Ui, avatar: &egui::Response, name: &str) {
 	let colors = design::palette(ui);
 	// Inset the centered stroke so the ring stays inside the avatar.
 	ui.painter().circle_stroke(
@@ -4634,7 +4639,7 @@ fn stage_participants(state: &State, channel: Id) -> Vec<RosterEntry> {
 
 /// The local participant follows this device's toggles at once instead of waiting for the
 /// gateway echo, so a deafen shows the deafened glyph immediately (and in the offline preview).
-fn shown_participant(state: &State, entry: &RosterEntry) -> Participant {
+pub(crate) fn shown_participant(state: &State, entry: &RosterEntry) -> Participant {
 	let mut participant = entry.participant;
 	if let Some(call) = state
 		.voice
@@ -4666,7 +4671,7 @@ fn inactive_recipient(state: &State, channel: Id, user: Id) -> bool {
 	})
 }
 
-fn resolve_member<'a>(
+pub(crate) fn resolve_member<'a>(
 	state: &'a State,
 	entry: &'a RosterEntry,
 ) -> (Option<&'a model::User>, &'a str) {

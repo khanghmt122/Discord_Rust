@@ -5607,8 +5607,8 @@ impl eframe::App for Desktop {
 			&& !viewport.close_requested()
 			&& self.window.is_visible() != Some(false)
 		{
-			// While maximized, keep the normal geometry so un-maximizing after a restart returns to it.
-			let geometry = if viewport.maximized == Some(true) {
+			// While maximized or in mini dock, keep the normal geometry so un-maximizing or exiting dock returns to it.
+			let geometry = if viewport.maximized == Some(true) || self.messaging.mini_dock {
 				self.geometry_rest
 					.maximized_geometry(self.app_settings.current.window_geometry)
 			} else {
@@ -6411,6 +6411,79 @@ impl eframe::App for Desktop {
 				!self.fixture_only && !self.confirming_close && !self.confirming_logout,
 			) {
 				commands.push(command);
+			}
+			if self.messaging.mini_dock_toggled {
+				self.messaging.mini_dock_toggled = false;
+				if self.messaging.mini_dock {
+					let factor = self.window.scale_factor();
+					let cur_size = self.window.inner_size().to_logical::<f32>(factor);
+					if self.messaging.pre_dock_size.is_none() {
+						self.messaging.pre_dock_size =
+							Some(egui::vec2(cur_size.width, cur_size.height));
+					}
+					let target_width = 340.0_f32;
+					let target_height = cur_size.height.max(480.0);
+					self.window
+						.set_min_inner_size(Some(winit::dpi::LogicalSize::new(260.0, 360.0)));
+					let _ = self.window.request_inner_size(winit::dpi::LogicalSize::new(
+						target_width as f64,
+						target_height as f64,
+					));
+					ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(
+						260.0, 360.0,
+					)));
+					ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+						target_width,
+						target_height,
+					)));
+					if self.messaging.mini_dock_pinned {
+						self.window
+							.set_window_level(winit::window::WindowLevel::AlwaysOnTop);
+						ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+							egui::WindowLevel::AlwaysOnTop,
+						));
+					}
+				} else {
+					let target_size = self
+						.messaging
+						.pre_dock_size
+						.take()
+						.unwrap_or(egui::vec2(1100.0, 720.0));
+					let min_w = app_settings::MIN_WINDOW_SIZE[0] as f64;
+					let min_h = app_settings::MIN_WINDOW_SIZE[1] as f64;
+					self.window
+						.set_min_inner_size(Some(winit::dpi::LogicalSize::new(min_w, min_h)));
+					let _ = self.window.request_inner_size(winit::dpi::LogicalSize::new(
+						target_size.x as f64,
+						target_size.y as f64,
+					));
+					ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(
+						min_w as f32,
+						min_h as f32,
+					)));
+					ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(target_size));
+					self.window
+						.set_window_level(winit::window::WindowLevel::Normal);
+					ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+						egui::WindowLevel::Normal,
+					));
+				}
+			}
+			if self.messaging.mini_dock_pinned_toggled {
+				self.messaging.mini_dock_pinned_toggled = false;
+				let level = if self.messaging.mini_dock_pinned {
+					winit::window::WindowLevel::AlwaysOnTop
+				} else {
+					winit::window::WindowLevel::Normal
+				};
+				self.window.set_window_level(level);
+				ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+					if self.messaging.mini_dock_pinned {
+						egui::WindowLevel::AlwaysOnTop
+					} else {
+						egui::WindowLevel::Normal
+					},
+				));
 			}
 			let player = self.messaging.audio();
 			if !player.seen
