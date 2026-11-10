@@ -1218,8 +1218,9 @@ impl Avatars {
 		key: &str,
 		hovered: bool,
 	) -> Option<TextureHandle> {
+		let is_emoji = key.starts_with("anim:emoji-");
 		if !self.animate_gifs
-			|| !ctx.input(|input| input.focused)
+			|| (!is_emoji && !ctx.input(|input| input.focused))
 			|| !(hovered || self.avatar_animation || !is_animated_profile_or_avatar_key(key))
 		{
 			return None;

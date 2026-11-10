@@ -561,7 +561,7 @@ impl Picker {
 									let (text, _) = standard()[index];
 									let name = shortcodes()[index].as_str();
 									let image = crate::emoji::image(ui.ctx(), text, 32.0);
-									if cell(ui, image, name, true, &colors)
+									if cell(ui, image, name, true, false, &colors)
 										.on_hover_text(name)
 										.clicked()
 									{
@@ -936,10 +936,11 @@ impl Picker {
 		if self.shares_emoji(state, &emoji, custom)
 			&& let Some(id) = emoji.id
 		{
+			let animated = custom.map_or_else(|| text.starts_with("<a:"), |(_, e)| e.animated);
 			return Pick::Insert(
 				model::ImageShare::Emoji {
 					id,
-					animated: text.starts_with("<a:"),
+					animated,
 				}
 				.markdown(emoji.name.as_deref().unwrap_or("emoji"))
 				.unwrap_or(text),
@@ -1135,7 +1136,7 @@ impl Picker {
 		let mut selected: Option<Pick> = None;
 		let mut used = None;
 		let mut gif_action: Option<GifAction> = None;
-		let mut hovered: Option<(Option<egui::Image<'static>>, String, String)> = None;
+		let mut hovered: Option<(Option<egui::Image<'static>>, String, String, bool)> = None;
 		let mut hovered_source: Option<&str> = None;
 		let mut hovered_gif: Option<String> = None;
 		let gifs_tab = self.tab == Tab::Gifs;
@@ -1589,12 +1590,14 @@ impl Picker {
 													Used::Custom(id) => state.custom_emoji(id),
 													Used::Unicode(_) => None,
 												};
+												let is_animated = custom.is_some_and(|(_, e)| e.animated);
 												let (image, name, code, emoji, text) =
 													match (favorite, custom) {
 														(_, Some((_, custom))) => (
-															avatars.custom_image(
+															avatars.custom_emoji(
 																ui.ctx(),
 																custom.id,
+																custom.animated,
 																32.0,
 																demo,
 															),
@@ -1633,6 +1636,7 @@ impl Picker {
 															image.clone(),
 															&code,
 															enabled,
+															is_animated,
 															&colors,
 														)
 													})
@@ -1653,7 +1657,7 @@ impl Picker {
 													)
 												};
 												if response.hovered() || response.has_focus() {
-													hovered = Some((image, name, code));
+													hovered = Some((image, name, code, is_animated));
 													hovered_source =
 														custom.map(|(g, _)| g.name.as_str());
 												}
@@ -1735,6 +1739,7 @@ impl Picker {
 														{
 															let custom_emoji =
 																custom.get(state, index);
+															let is_animated = custom_emoji.is_some_and(|(_, e)| e.animated);
 															let (
 																image,
 																name,
@@ -1746,9 +1751,10 @@ impl Picker {
 																custom_emoji
 															{
 																(
-																	avatars.custom_image(
+																	avatars.custom_emoji(
 																		ui.ctx(),
 																		emoji.id,
+																		emoji.animated,
 																		32.0,
 																		demo,
 																	),
@@ -1823,6 +1829,7 @@ impl Picker {
 																			image.clone(),
 																			&code,
 																			enabled,
+																			is_animated,
 																			&colors,
 																		)
 																	},
@@ -1844,7 +1851,7 @@ impl Picker {
 															if response.hovered()
 																|| response.has_focus()
 															{
-																hovered = Some((image, name, code));
+																hovered = Some((image, name, code, is_animated));
 																hovered_source =
 																	source.map(|g| g.name.as_str());
 															}
@@ -1958,7 +1965,7 @@ impl Picker {
 									return;
 								}
 								match &hovered {
-									Some((image, fallback, code)) => {
+									Some((image, fallback, code, is_animated)) => {
 										let (rect, _) = ui.allocate_exact_size(
 											egui::Vec2::splat(32.0),
 											egui::Sense::hover(),
@@ -1966,13 +1973,34 @@ impl Picker {
 										paint_emoji(ui, rect, image.as_ref(), fallback);
 										ui.vertical(|ui| {
 											ui.spacing_mut().item_spacing.y = 0.0;
-											ui.add(
-												egui::Label::new(
-													crate::design::semibold(ui, code, 15.0)
-														.color(colors.text_strong),
-												)
-												.truncate(),
-											);
+											ui.horizontal(|ui| {
+												ui.spacing_mut().item_spacing.x = 6.0;
+												ui.add(
+													egui::Label::new(
+														crate::design::semibold(ui, code, 15.0)
+															.color(colors.text_strong),
+													)
+													.truncate(),
+												);
+												if *is_animated {
+													let (tag_rect, _) = ui.allocate_exact_size(
+														egui::vec2(24.0, 14.0),
+														egui::Sense::hover(),
+													);
+													ui.painter().rect_filled(
+														tag_rect,
+														3.0,
+														colors.selected,
+													);
+													ui.painter().text(
+														tag_rect.center(),
+														egui::Align2::CENTER_CENTER,
+														"GIF",
+														egui::FontId::proportional(9.0),
+														colors.text_strong,
+													);
+												}
+											});
 											if let Some(source) = hovered_source {
 												ui.add(
 													egui::Label::new(
@@ -2696,6 +2724,7 @@ fn cell(
 	image: Option<egui::Image<'static>>,
 	name: &str,
 	enabled: bool,
+	is_animated: bool,
 	colors: &crate::design::Palette,
 ) -> egui::Response {
 	let (rect, response) = ui.allocate_exact_size(
@@ -2730,6 +2759,24 @@ fn cell(
 					colors.muted,
 				);
 			}
+		}
+		if is_animated {
+			let badge_rect = egui::Rect::from_min_size(
+				egui::pos2(rect.right() - 17.0, rect.bottom() - 11.0),
+				egui::vec2(15.0, 9.0),
+			);
+			ui.painter().rect_filled(
+				badge_rect,
+				2.0,
+				egui::Color32::from_black_alpha(160),
+			);
+			ui.painter().text(
+				badge_rect.center(),
+				egui::Align2::CENTER_CENTER,
+				"GIF",
+				egui::FontId::proportional(7.0),
+				egui::Color32::WHITE,
+			);
 		}
 	}
 	response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, name));

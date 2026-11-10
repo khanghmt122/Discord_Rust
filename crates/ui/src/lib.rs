@@ -2891,7 +2891,10 @@ impl MessagingUi {
 		if self.selected_files().is_empty()
 			&& let Some(assets) = model::ImageShare::markdown_only(&converted_draft)
 		{
-			if state.can_attach(channel) {
+			let has_stickers = assets
+				.iter()
+				.any(|a| matches!(a, model::ImageShare::Sticker { .. }));
+			if has_stickers && state.can_attach(channel) {
 				self.image_share_requested =
 					Some((state.generation, channel, assets, converted_draft.clone()));
 				state.drafts.insert(channel, converted_draft);

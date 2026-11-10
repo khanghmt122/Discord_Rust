@@ -33,8 +33,9 @@ fn convert_custom_tags(draft: &str, state: &State, channel: Id) -> String {
 				&& let Ok(id_u64) = id_str.parse::<u64>()
 			{
 				let id = Id(id_u64);
+				let custom = state.custom_emoji(id);
+				let is_animated = is_animated || custom.is_some_and(|(_, e)| e.animated);
 				let requires_nitro = is_animated || {
-					let custom = state.custom_emoji(id);
 					match custom {
 						Some((guild, emoji)) => {
 							state.custom_emoji_requires_nitro(channel, guild.id, emoji)
