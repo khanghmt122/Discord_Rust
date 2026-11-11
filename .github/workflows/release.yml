@@ -2,8 +2,7 @@ name: Release
 run-name: ${{ inputs.channel || 'nightly' }} release by @${{ github.actor }}
 
 on:
-  schedule:
-    - cron: '17 3 * * *'
+  # Fork uses build.yml for nightly releases without Apple signing secrets; manual dispatch only.
   workflow_dispatch:
     inputs:
       channel:
