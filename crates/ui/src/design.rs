@@ -520,14 +520,80 @@ pub fn set_background_image(ctx: &egui::Context, image: Option<std::sync::Arc<eg
 	});
 }
 
+#[derive(Clone, Copy)]
+struct LiveBgRenderState {
+	mode: crate::live_background::LiveBackgroundMode,
+	panel_opacity: u8,
+	bg_opacity: u8,
+	speed_percent: u16,
+	frame: Option<(egui::TextureId, egui::Vec2)>,
+}
+impl Default for LiveBgRenderState {
+	fn default() -> Self {
+		Self {
+			mode: crate::live_background::LiveBackgroundMode::Off,
+			panel_opacity: 72,
+			bg_opacity: 92,
+			speed_percent: 100,
+			frame: None,
+		}
+	}
+}
+thread_local! {
+	static LIVE_BG_STATE: std::cell::RefCell<LiveBgRenderState> =
+		std::cell::RefCell::new(LiveBgRenderState::default());
+}
+
+pub fn set_live_background_config(config: &crate::live_background::LiveBackgroundConfig) {
+	LIVE_BG_STATE.with(|state| {
+		let mut st = state.borrow_mut();
+		let prev_mode = st.mode;
+		st.mode = crate::live_background::LiveBackgroundMode::from_u8(config.mode);
+		st.panel_opacity = config.panel_opacity.clamp(15, 100);
+		st.bg_opacity = config.bg_opacity.clamp(0, 100);
+		st.speed_percent = config.speed_percent.clamp(10, 500);
+		if st.mode == crate::live_background::LiveBackgroundMode::Off || st.mode.is_ambient_shader()
+		{
+			st.frame = None;
+		}
+		if st.mode.is_ambient_shader() {
+			crate::live_effects::set_is_gojo(false);
+		} else if st.mode == crate::live_background::LiveBackgroundMode::Off
+			&& prev_mode != crate::live_background::LiveBackgroundMode::Off
+		{
+			let is_gojo = BACKGROUND_IMAGE.with(|image| {
+				image
+					.borrow()
+					.as_ref()
+					.is_some_and(|(img, _)| crate::live_effects::detect_gojo_eye(img))
+			});
+			crate::live_effects::set_is_gojo(is_gojo);
+		}
+	});
+}
+
+pub fn set_live_background_frame(frame: Option<(egui::TextureId, egui::Vec2)>) {
+	LIVE_BG_STATE.with(|state| {
+		state.borrow_mut().frame = frame;
+	});
+}
+
+pub fn has_live_background() -> bool {
+	LIVE_BG_STATE.with(|state| {
+		let st = state.borrow();
+		st.mode.is_ambient_shader() || (st.mode.is_media_backed() && st.frame.is_some())
+	})
+}
+
 pub fn has_window_background(ui: &egui::Ui) -> bool {
-	BACKGROUND_IMAGE.with(|image| image.borrow().is_some())
-		&& EXTENSION_THEME.get().is_some_and(|palettes| {
-			palettes[usize::from(ui.visuals().dark_mode)]
-				.background
-				.unwrap_or_default()
-				.target == extensions::BackgroundTarget::Window
-		})
+	has_live_background()
+		|| (BACKGROUND_IMAGE.with(|image| image.borrow().is_some())
+			&& EXTENSION_THEME.get().is_some_and(|palettes| {
+				palettes[usize::from(ui.visuals().dark_mode)]
+					.background
+					.unwrap_or_default()
+					.target == extensions::BackgroundTarget::Window
+			}))
 }
 
 #[derive(Clone, Copy)]
@@ -546,20 +612,31 @@ pub fn section_surface(ui: &egui::Ui, color: Color32, section: ImageSection) -> 
 	if !has_window_background(ui) {
 		return color;
 	}
-	let Some(sections) = EXTENSION_THEME.get().and_then(|palettes| {
-		palettes[usize::from(ui.visuals().dark_mode)]
-			.background?
-			.sections
-	}) else {
-		return color;
-	};
-	let mut opacity = match section {
-		ImageSection::TopBar => sections.top_bar,
-		ImageSection::ServerList => sections.server_list,
-		ImageSection::ChannelList => sections.channel_list,
-		ImageSection::MessageList => sections.message_list,
-		ImageSection::MemberList => sections.member_list,
-		ImageSection::Composer => sections.composer,
+	let mut opacity = if has_live_background() {
+		let base = LIVE_BG_STATE.with(|state| state.borrow().panel_opacity);
+		match section {
+			ImageSection::MessageList => base,
+			ImageSection::ChannelList | ImageSection::MemberList => base.saturating_add(4).min(95),
+			ImageSection::TopBar | ImageSection::ServerList | ImageSection::Composer => {
+				base.saturating_add(8).min(95)
+			}
+		}
+	} else {
+		let Some(sections) = EXTENSION_THEME.get().and_then(|palettes| {
+			palettes[usize::from(ui.visuals().dark_mode)]
+				.background?
+				.sections
+		}) else {
+			return color;
+		};
+		match section {
+			ImageSection::TopBar => sections.top_bar,
+			ImageSection::ServerList => sections.server_list,
+			ImageSection::ChannelList => sections.channel_list,
+			ImageSection::MessageList => sections.message_list,
+			ImageSection::MemberList => sections.member_list,
+			ImageSection::Composer => sections.composer,
+		}
 	};
 	if enabled {
 		opacity = (u16::from(opacity) * u16::from(100 - transparency) / 100) as u8;
@@ -713,12 +790,13 @@ pub fn account_card_surface(ui: &egui::Ui) -> (Color32, Stroke) {
 }
 
 pub fn has_section_background(ui: &egui::Ui) -> bool {
-	has_window_background(ui)
-		&& EXTENSION_THEME.get().is_some_and(|palettes| {
-			palettes[usize::from(ui.visuals().dark_mode)]
-				.background
-				.is_some_and(|background| background.sections.is_some())
-		})
+	has_live_background()
+		|| (has_window_background(ui)
+			&& EXTENSION_THEME.get().is_some_and(|palettes| {
+				palettes[usize::from(ui.visuals().dark_mode)]
+					.background
+					.is_some_and(|background| background.sections.is_some())
+			}))
 }
 
 /// Keep large hover rows translucent over a shared background image.
@@ -945,12 +1023,15 @@ fn opaque_surfaces(mut palette: Palette) -> Palette {
 	}
 	palette
 }
-/// Paint the gradient backdrop behind every panel; a no-op for opaque variants.
+/// Paint the gradient backdrop, animated theme, or live synced wallpaper behind every panel.
 pub fn paint_backdrop(ctx: &egui::Context) {
 	let dark = ctx.theme() == egui::Theme::Dark;
 	let palette = colors(dark, variant());
 	let has_image = BACKGROUND_IMAGE.with(|image| image.borrow().is_some());
-	if palette.backdrop.is_none() && !has_image {
+	let live = LIVE_BG_STATE.with(|state| *state.borrow());
+	let has_live =
+		live.mode.is_ambient_shader() || (live.mode.is_media_backed() && live.frame.is_some());
+	if palette.backdrop.is_none() && !has_image && !has_live {
 		return;
 	}
 	let [top, bottom] = palette.backdrop.unwrap_or_else(|| {
@@ -978,30 +1059,56 @@ pub fn paint_backdrop(ctx: &egui::Context) {
 	ctx.layer_painter(egui::LayerId::background())
 		.add(egui::Shape::mesh(mesh));
 	let mut bg_rect = None;
-	BACKGROUND_IMAGE.with(|image| {
-		if let Some((_, texture)) = image.borrow().as_ref() {
-			let background = EXTENSION_THEME
-				.get()
-				.and_then(|palettes| palettes[usize::from(dark)].background)
-				.unwrap_or_default();
-			if background.target != extensions::BackgroundTarget::Window {
-				return;
+	if live.mode.is_ambient_shader() {
+		crate::live_background::paint_ambient_theme(
+			ctx,
+			rect,
+			live.mode,
+			live.bg_opacity,
+			live.speed_percent,
+		);
+	} else if live.mode.is_media_backed()
+		&& let Some((tex_id, size)) = live.frame
+		&& size.x > 0.0
+		&& size.y > 0.0
+	{
+		let ratio = rect.size() / size;
+		let scale = ratio.x.max(ratio.y);
+		let image_rect = egui::Rect::from_center_size(rect.center(), size * scale);
+		bg_rect = Some(image_rect);
+		let painter = ctx.layer_painter(egui::LayerId::background());
+		painter.with_clip_rect(rect).image(
+			tex_id,
+			image_rect,
+			egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+			Color32::from_white_alpha((u16::from(live.bg_opacity) * 255 / 100) as u8),
+		);
+	} else {
+		BACKGROUND_IMAGE.with(|image| {
+			if let Some((_, texture)) = image.borrow().as_ref() {
+				let background = EXTENSION_THEME
+					.get()
+					.and_then(|palettes| palettes[usize::from(dark)].background)
+					.unwrap_or_default();
+				if background.target != extensions::BackgroundTarget::Window {
+					return;
+				}
+				let size = texture.resolution_vec2();
+				let ratio = rect.size() / size;
+				let scale = match background.fit {
+					extensions::BackgroundFit::Cover => ratio.x.max(ratio.y),
+					extensions::BackgroundFit::Contain => ratio.x.min(ratio.y),
+				};
+				bg_rect = Some(egui::Rect::from_center_size(rect.center(), size * scale));
+				paint_background_image(
+					&ctx.layer_painter(egui::LayerId::background()),
+					rect,
+					texture,
+					translucent_background(background),
+				);
 			}
-			let size = texture.size_vec2();
-			let ratio = rect.size() / size;
-			let scale = match background.fit {
-				extensions::BackgroundFit::Cover => ratio.x.max(ratio.y),
-				extensions::BackgroundFit::Contain => ratio.x.min(ratio.y),
-			};
-			bg_rect = Some(egui::Rect::from_center_size(rect.center(), size * scale));
-			paint_background_image(
-				&ctx.layer_painter(egui::LayerId::background()),
-				rect,
-				texture,
-				translucent_background(background),
-			);
-		}
-	});
+		});
+	}
 	crate::live_effects::paint_live_effects(ctx, rect, bg_rect);
 }
 

@@ -48,6 +48,25 @@ pub fn theme_background_source(
 	}
 }
 
+/// Native picker for animated desktop wallpaper media (MP4/MOV videos, GIF/WebP, or images).
+pub fn live_wallpaper_source(
+	parent: Arc<winit::window::Window>,
+) -> impl std::future::Future<Output = Option<PathBuf>> + Send + 'static {
+	let dialog = rfd::AsyncFileDialog::new()
+		.set_parent(parent.as_ref())
+		.set_title("Chọn Video / Ảnh Động làm Nền")
+		.add_filter(
+			"Animated & Images",
+			&["mp4", "mov", "m4v", "gif", "webp", "png", "jpg", "jpeg"],
+		)
+		.pick_file();
+	async move {
+		let file = dialog.await?;
+		drop(parent);
+		Some(file.path().to_owned())
+	}
+}
+
 pub fn theme_cover_source(
 	parent: Arc<winit::window::Window>,
 ) -> impl std::future::Future<Output = Option<PathBuf>> + Send + 'static {

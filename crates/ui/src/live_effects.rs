@@ -179,15 +179,16 @@ pub fn paint_live_effects(ctx: &egui::Context, rect: Rect, bg_rect: Option<Rect>
 	LAST_TIME.set(time);
 
 	// 1. Paint Gojo Infinity Eye Glow
-	if eye_glow && IS_GOJO_BACKGROUND.get() {
-		if let Some(bg) = bg_rect {
-			let eye_x = bg.min.x + bg.width() * 0.461;
-			let eye_y = bg.min.y + bg.height() * 0.477;
-			let eye_pos = Pos2::new(eye_x, eye_y);
+	if eye_glow
+		&& IS_GOJO_BACKGROUND.get()
+		&& let Some(bg) = bg_rect
+	{
+		let eye_x = bg.min.x + bg.width() * 0.461;
+		let eye_y = bg.min.y + bg.height() * 0.477;
+		let eye_pos = Pos2::new(eye_x, eye_y);
 
-			if rect.contains(eye_pos) {
-				paint_gojo_eye(&painter, eye_pos, bg.width(), time, dt);
-			}
+		if rect.contains(eye_pos) {
+			paint_gojo_eye(&painter, eye_pos, bg.width(), time, dt);
 		}
 	}
 
@@ -253,7 +254,7 @@ fn paint_gojo_eye(painter: &Painter, eye_pos: Pos2, bg_width: f32, time: f64, _d
 	// 4. Six Eyes Cursed Energy Wisps (orbiting around pupil)
 	for k in 0..4 {
 		let speed = 1.6 + k as f64 * 0.35;
-		let angle = (time * speed + k as f64 * 1.5708) as f32;
+		let angle = (time * speed + k as f64 * std::f64::consts::FRAC_PI_2) as f32;
 		let dist = base_r * (0.55 + 0.20 * (time * 3.2 + k as f64 * 1.1).sin() as f32);
 		let wisp_pos = eye_pos + Vec2::new(angle.cos() * dist, angle.sin() * dist * 0.82);
 		let w_alpha = ((130.0 + 80.0 * (time * 5.0 + k as f64).sin() as f32) * intensity)
@@ -484,7 +485,7 @@ mod tests {
 		let mut rng = SimpleRng::new(12345);
 		for _ in 0..100 {
 			let val = rng.range(10.0, 20.0);
-			assert!(val >= 10.0 && val <= 20.0, "val out of range: {val}");
+			assert!((10.0..=20.0).contains(&val), "val out of range: {val}");
 		}
 	}
 

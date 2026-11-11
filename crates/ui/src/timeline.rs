@@ -3934,10 +3934,10 @@ impl TimelineView {
 											// Auto-translate foreign messages if enabled
 											if self.translation.auto_translate
 												&& !message.content.trim().is_empty()
-											{
-												if !crate::translation::TranslationManager::is_vietnamese_text(&message.content) {
-													self.translation.request_if_needed(id, &message.content);
-												}
+												&& !crate::translation::TranslationManager::is_vietnamese_text(
+													&message.content,
+												) {
+												self.translation.request_if_needed(id, &message.content);
 											}
 											// Quick Translate Inline display
 											let mut hide_translation = false;

@@ -57,6 +57,11 @@ impl Settings {
 			auto_translate: ui.auto_translate,
 			live_particles: ui.live_particles,
 			eye_glow: ui.eye_glow,
+			live_bg_mode: ui.live_bg.mode,
+			live_bg_panel_opacity: ui.live_bg.panel_opacity,
+			live_bg_opacity: ui.live_bg.bg_opacity,
+			live_bg_speed: ui.live_bg.speed_percent,
+			live_bg_path: ui.live_bg.custom_path.clone(),
 			preload_on_hover: ui.preload_on_hover,
 			auto_idle: ui.auto_idle,
 			hide_title_bar: ui.hide_title_bar,
@@ -115,6 +120,11 @@ impl Settings {
 		ui.auto_translate = value.auto_translate;
 		ui.live_particles = value.live_particles;
 		ui.eye_glow = value.eye_glow;
+		ui.live_bg.mode = value.live_bg_mode;
+		ui.live_bg.panel_opacity = value.live_bg_panel_opacity;
+		ui.live_bg.bg_opacity = value.live_bg_opacity;
+		ui.live_bg.speed_percent = value.live_bg_speed;
+		ui.live_bg.custom_path.clone_from(&value.live_bg_path);
 		ui.preload_on_hover = value.preload_on_hover;
 		ui.auto_idle = value.auto_idle;
 		ui.hide_title_bar = value.hide_title_bar;

@@ -129,6 +129,7 @@ mod text_menu;
 mod thumbhash;
 #[cfg(feature = "demo")]
 pub use polls::debug_poll_check;
+pub mod live_background;
 pub mod live_effects;
 mod timeline;
 #[cfg(test)]
@@ -268,6 +269,12 @@ pub struct MessagingUi {
 	pub auto_translate: bool,
 	pub live_particles: u8,
 	pub eye_glow: bool,
+	/// Live animated wallpaper & Antigravity ambient theme configuration.
+	pub live_bg: live_background::LiveBackgroundConfig,
+	/// Set when user clicks "Chọn Video / GIF / Ảnh..." in Appearance settings.
+	pub live_bg_pick_requested: bool,
+	/// Live status string from the desktop wallpaper sync engine.
+	pub live_bg_status: String,
 	/// Compact Mini Dock mode (bong bóng chat & voice dọc mép màn hình).
 	pub mini_dock: bool,
 	/// Whether the Mini Dock window is pinned Always-on-Top.
@@ -4712,10 +4719,10 @@ impl MessagingUi {
 							egui::Button::new(RichText::new("📞✕").size(12.0).color(colors.danger))
 								.frame(false),
 						);
-						if leave.on_hover_text("Rời phòng thoại").clicked() {
-							if let Some(cmd) = state.leave_call() {
-								commands.push(cmd);
-							}
+						if leave.on_hover_text("Rời phòng thoại").clicked()
+							&& let Some(cmd) = state.leave_call()
+						{
+							commands.push(cmd);
 						}
 
 						// Deafen toggle

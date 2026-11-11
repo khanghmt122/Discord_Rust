@@ -34,6 +34,7 @@ mod gpu;
 mod gpu_video;
 mod group_icon;
 mod interaction_uploads;
+mod live_wallpaper;
 mod notification_runtime;
 mod notification_sounds;
 #[cfg(feature = "demo")]
@@ -1007,6 +1008,7 @@ impl SessionEnd {
 }
 /// Window placement, scale, monitor size and focus; any change re-reads the monitor's refresh rate.
 type MonitorKey = (Option<egui::Rect>, Option<f32>, Option<egui::Vec2>, bool);
+type TranslationEvent = (model::Id, Result<(String, String), String>);
 struct Desktop {
 	proxy_auth: proxy_auth::Authentication,
 	api_proxy: tokio::sync::watch::Sender<Option<discord_api::proxy::ApiProxy>>,
@@ -1087,9 +1089,10 @@ struct Desktop {
 	/// Linux desktop light/dark preference; winit reports it everywhere else.
 	system_theme: platform::system_theme::SystemTheme,
 	tray_error: Option<&'static str>,
-	translation_tx: std::sync::mpsc::Sender<(model::Id, Result<(String, String), String>)>,
-	translation_rx: std::sync::mpsc::Receiver<(model::Id, Result<(String, String), String>)>,
+	translation_tx: std::sync::mpsc::Sender<TranslationEvent>,
+	translation_rx: std::sync::mpsc::Receiver<TranslationEvent>,
 	translation_client: wreq::Client,
+	live_wallpaper: live_wallpaper::LiveWallpaper,
 	tray_window: tray_window::State,
 	/// Native menu bar, retitled whenever the interface language changes.
 	#[cfg(target_os = "macos")]
@@ -2371,6 +2374,7 @@ impl Desktop {
 			translation_tx,
 			translation_rx,
 			translation_client,
+			live_wallpaper: live_wallpaper::LiveWallpaper::default(),
 			proxy_auth: proxy_auth::Authentication::default(),
 			api_proxy: tokio::sync::watch::channel(None).0,
 			extensions: extension_bridge::Bridge::default(),
@@ -6037,6 +6041,8 @@ impl eframe::App for Desktop {
 				std::mem::take(&mut input.raw.dropped_files),
 			)
 		});
+		self.live_wallpaper
+			.sync(&ctx, &self.window, &mut self.messaging);
 		ui::live_effects::set_voice_active(!self.messaging.voice_speaking.is_empty());
 		ui::live_effects::set_live_effects(self.messaging.live_particles, self.messaging.eye_glow);
 		ui::design::paint_backdrop(&ctx);

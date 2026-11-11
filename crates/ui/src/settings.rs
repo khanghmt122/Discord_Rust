@@ -1131,6 +1131,116 @@ impl MessagingUi {
 		);
 		design::group(
 			ui,
+			"Theme Động & Sync Màn Hình (Live Wallpaper & Antigravity)",
+			|ui| {
+				use crate::live_background::LiveBackgroundMode;
+				const MODES: [LiveBackgroundMode; 9] = [
+					LiveBackgroundMode::Off,
+					LiveBackgroundMode::DesktopSync,
+					LiveBackgroundMode::CustomMedia,
+					LiveBackgroundMode::Aurora,
+					LiveBackgroundMode::Starfield,
+					LiveBackgroundMode::Synthwave,
+					LiveBackgroundMode::Neural,
+					LiveBackgroundMode::DeepOcean,
+					LiveBackgroundMode::CyberMatrix,
+				];
+				design::row(
+					ui,
+					"Chế độ Nền Động",
+					Some(
+						"Đồng bộ video/ảnh nền máy tính (hỗ trợ iWallpaper, MP4/MOV/GIF/WebP) hoặc dùng shader động như Antigravity",
+					),
+					|_ui| {},
+				);
+				ui.horizontal_wrapped(|ui| {
+					ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+					for mode in MODES {
+						if ui
+							.selectable_label(self.live_bg.mode == mode.to_u8(), mode.label())
+							.clicked()
+						{
+							self.live_bg.mode = mode.to_u8();
+							if mode == LiveBackgroundMode::CustomMedia
+								&& self.live_bg.custom_path.is_none()
+							{
+								self.live_bg_pick_requested = true;
+							}
+						}
+					}
+				});
+				let active_mode = LiveBackgroundMode::from_u8(self.live_bg.mode);
+				if active_mode == LiveBackgroundMode::DesktopSync {
+					ui.add_space(6.0);
+					let status_text = if self.live_bg_status.is_empty() {
+						"Đang tìm hình nền / iWallpaper động trên máy tính..."
+					} else {
+						self.live_bg_status.as_str()
+					};
+					design::hint(ui, status_text);
+				} else if active_mode == LiveBackgroundMode::CustomMedia {
+					ui.add_space(6.0);
+					ui.horizontal_wrapped(|ui| {
+						if ui.button("📂 Chọn Video / GIF / Ảnh...").clicked() {
+							self.live_bg_pick_requested = true;
+						}
+						if let Some(path) = &self.live_bg.custom_path {
+							let name = std::path::Path::new(path)
+								.file_name()
+								.and_then(|s| s.to_str())
+								.unwrap_or(path.as_str());
+							ui.label(
+								egui::RichText::new(name)
+									.size(12.5)
+									.color(design::palette(ui).muted),
+							);
+						} else {
+							ui.label(
+								egui::RichText::new("Hỗ trợ .mp4, .mov, .gif, .webp, .png, .jpg")
+									.size(12.5)
+									.color(design::palette(ui).muted),
+							);
+						}
+					});
+					if !self.live_bg_status.is_empty() {
+						design::hint(ui, &self.live_bg_status);
+					}
+				}
+				if active_mode != LiveBackgroundMode::Off {
+					design::card_divider(ui);
+					design::slider_row(
+						ui,
+						"Độ mờ kính khung chat (Glass UI Opacity)",
+						Some(
+							"Chỉnh độ xuyên thấu của các khung chat và thanh bên để nhìn rõ nền động",
+						),
+						&mut self.live_bg.panel_opacity,
+						25..=95,
+						"%",
+					);
+					ui.add_space(6.0);
+					design::slider_row(
+						ui,
+						"Độ sáng nền động (Background Opacity)",
+						None,
+						&mut self.live_bg.bg_opacity,
+						20..=100,
+						"%",
+					);
+					ui.add_space(6.0);
+					design::slider_row(
+						ui,
+						"Tốc độ chuyển động (Animation Speed)",
+						None,
+						&mut self.live_bg.speed_percent,
+						20..=300,
+						"%",
+					);
+				}
+			},
+		);
+		design::group(
+			ui,
 			"Hiệu ứng Đồ họa Động (Live Shader & Particles)",
 			|ui| {
 				design::switch(

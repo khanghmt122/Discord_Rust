@@ -6272,10 +6272,12 @@ dependencies = [
 name = "serein"
 version = "0.1.0"
 dependencies = [
+ "aes 0.8.4",
  "arboard",
  "client-core",
  "cpal",
  "diagnostics",
+ "dirs",
  "discord-api",
  "discord-gateway",
  "discord-protocol",

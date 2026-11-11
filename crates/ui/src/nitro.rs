@@ -43,17 +43,16 @@ fn convert_custom_tags(draft: &str, state: &State, channel: Id) -> String {
 						None => true,
 					}
 				};
-				if requires_nitro {
-					if let Some(md) = (model::ImageShare::Emoji {
+				if requires_nitro
+					&& let Some(md) = (model::ImageShare::Emoji {
 						id,
 						animated: is_animated,
 					})
 					.markdown(name)
-					{
-						result.push_str(&md);
-						remaining = &remaining[end + 1..];
-						continue;
-					}
+				{
+					result.push_str(&md);
+					remaining = &remaining[end + 1..];
+					continue;
 				}
 			}
 		}
@@ -131,19 +130,19 @@ pub fn unmask_artwork_links(draft: &str) -> String {
 	while let Some(start) = remaining.find('[') {
 		result.push_str(&remaining[..start]);
 		remaining = &remaining[start..];
-		if let Some((asset, _, len)) = model::ImageShare::markdown_prefix(remaining) {
-			if let Some(url) = asset.url() {
-				if !result.is_empty() && !result.ends_with(' ') && !result.ends_with('\n') {
-					result.push(' ');
-				}
-				result.push_str(&url);
-				let tail = &remaining[len..];
-				if !tail.is_empty() && !tail.starts_with(' ') && !tail.starts_with('\n') {
-					result.push(' ');
-				}
-				remaining = tail;
-				continue;
+		if let Some((asset, _, len)) = model::ImageShare::markdown_prefix(remaining)
+			&& let Some(url) = asset.url()
+		{
+			if !result.is_empty() && !result.ends_with(' ') && !result.ends_with('\n') {
+				result.push(' ');
 			}
+			result.push_str(&url);
+			let tail = &remaining[len..];
+			if !tail.is_empty() && !tail.starts_with(' ') && !tail.starts_with('\n') {
+				result.push(' ');
+			}
+			remaining = tail;
+			continue;
 		}
 		result.push('[');
 		remaining = &remaining[1..];
@@ -175,8 +174,10 @@ mod tests {
 
 	#[test]
 	fn convert_custom_tags_converts_animated_emoji_when_non_nitro() {
-		let mut state = client_core::State::default();
-		state.premium_type = 0;
+		let state = client_core::State {
+			premium_type: 0,
+			..Default::default()
+		};
 		let converted = convert_custom_tags("Hello <a:blob_dance:12345678>!", &state, Id(1));
 		assert_eq!(
 			converted,
@@ -186,8 +187,10 @@ mod tests {
 
 	#[test]
 	fn convert_custom_tags_preserves_when_has_nitro() {
-		let mut state = client_core::State::default();
-		state.premium_type = 2;
+		let state = client_core::State {
+			premium_type: 2,
+			..Default::default()
+		};
 		let input = "Hello <a:blob_dance:12345678>!";
 		let converted = convert_custom_tags(input, &state, Id(1));
 		assert_eq!(converted, input);

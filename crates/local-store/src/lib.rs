@@ -62,6 +62,16 @@ pub struct AppPreferences {
 	pub live_particles: u8,
 	#[serde(default = "default_true")]
 	pub eye_glow: bool,
+	/// Live wallpaper & Antigravity dynamic theme mode (0=Off, 1=DesktopSync, 2=Custom, 3..=8=Presets).
+	pub live_bg_mode: u8,
+	/// Frosted glass UI opacity (%) while a live background is active.
+	pub live_bg_panel_opacity: u8,
+	/// Background video/shader layer opacity (%).
+	pub live_bg_opacity: u8,
+	/// Animation / video speed in percent (100 = 1.0x).
+	pub live_bg_speed: u16,
+	/// Custom selected video/GIF/image path when `live_bg_mode == 2`.
+	pub live_bg_path: Option<String>,
 	/// Request a conversation's page while the pointer rests on it; older preferences enable it.
 	pub preload_on_hover: bool,
 	/// Show as Idle after 10 minutes of system inactivity; older preferences enable it.
@@ -134,6 +144,11 @@ impl Default for AppPreferences {
 			auto_translate: false,
 			live_particles: 1,
 			eye_glow: true,
+			live_bg_mode: 0,
+			live_bg_panel_opacity: 72,
+			live_bg_opacity: 92,
+			live_bg_speed: 100,
+			live_bg_path: None,
 			preload_on_hover: true,
 			auto_idle: true,
 			hide_title_bar: false,
@@ -194,6 +209,14 @@ impl AppPreferences {
 			&& [&self.voice_input, &self.voice_output]
 				.into_iter()
 				.all(|value| value.as_ref().is_none_or(|value| value.len() <= 1024))
+			&& self.live_bg_mode <= 8
+			&& (15..=100).contains(&self.live_bg_panel_opacity)
+			&& self.live_bg_opacity <= 100
+			&& (10..=500).contains(&self.live_bg_speed)
+			&& self
+				.live_bg_path
+				.as_ref()
+				.is_none_or(|value| !value.is_empty() && value.len() <= 1024)
 	}
 }
 
