@@ -1182,8 +1182,35 @@ fn show_media(
 		}
 		return;
 	}
+	let resolved = resolve_media(&media.url, message);
+	if !thumbnail && let Some(video_att) = playable_component_video(media, resolved, message.id) {
+		media_ui
+			.video
+			.show(ui, message, &video_att, media_ui.download, opening, demo);
+		if media_ui
+			.video
+			.active
+			.as_ref()
+			.is_some_and(|(_, id, active)| *id == message.id && active == &video_att)
+		{
+			*media_ui.component_viewing = Some((
+				message.id,
+				egui::Id::unique((&message.components, &message.attachments)).value(),
+			));
+		}
+		if let Some(description) = description {
+			ui.small(description);
+		}
+		if ui
+			.small_button(crate::i18n::translate("components-show-media-open-media"))
+			.clicked()
+		{
+			*opening = resolved.and_then(markdown::external_url);
+		}
+		return;
+	}
 	let image = model::EmbedMedia {
-		url: resolve_media(&media.url, message).map(str::to_owned),
+		url: resolved.map(str::to_owned),
 		proxy_url: media.proxy_url.clone(),
 		width: media.width.unwrap_or(320),
 		height: media.height.unwrap_or(180),
@@ -1237,6 +1264,65 @@ fn resolve_media<'a>(url: &'a str, message: &'a Message) -> Option<&'a str> {
 	} else {
 		Some(url)
 	}
+}
+
+fn playable_component_video(
+	media: &model::ComponentMedia,
+	resolved_url: Option<&str>,
+	message_id: Id,
+) -> Option<model::Attachment> {
+	let primary = resolved_url
+		.filter(|u| crate::video::looks_like_video_url(u))
+		.or_else(|| {
+			media
+				.proxy_url
+				.as_deref()
+				.filter(|u| crate::video::looks_like_video_url(u))
+		})?;
+	crate::video::synthetic_attachment(
+		message_id,
+		primary,
+		media.proxy_url.as_deref(),
+		media.width.unwrap_or(0),
+		media.height.unwrap_or(0),
+		None,
+	)
+}
+
+fn component_contains_video(
+	component: &model::Component,
+	message: &Message,
+	target: &model::Attachment,
+) -> bool {
+	let matches_media = |media: &model::ComponentMedia| {
+		playable_component_video(media, resolve_media(&media.url, message), message.id).as_ref()
+			== Some(target)
+	};
+	component.media.as_ref().is_some_and(matches_media)
+		|| component.file.as_ref().is_some_and(matches_media)
+		|| component
+			.items
+			.iter()
+			.any(|item| matches_media(&item.media))
+		|| component
+			.accessory
+			.as_deref()
+			.is_some_and(|child| component_contains_video(child, message, target))
+		|| component
+			.component
+			.as_deref()
+			.is_some_and(|child| component_contains_video(child, message, target))
+		|| component
+			.components
+			.iter()
+			.any(|child| component_contains_video(child, message, target))
+}
+
+pub(crate) fn has_playable_video(message: &Message, target: &model::Attachment) -> bool {
+	message
+		.components
+		.iter()
+		.any(|component| component_contains_video(component, message, target))
 }
 
 #[cfg(test)]

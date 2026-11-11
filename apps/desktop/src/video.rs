@@ -41,15 +41,36 @@ impl Session {
 struct Request {
 	session: Arc<Session>,
 	url: Option<url::Url>,
+	external_urls: Vec<url::Url>,
 	size: usize,
 }
 /// One idle-stage poster: decode a single first frame, never playback.
 struct PosterJob {
 	id: model::Id,
 	url: Option<url::Url>,
+	external_urls: Vec<url::Url>,
 	size: usize,
 	/// Set when the session ends; skips the job and aborts its range reads.
 	cancelled: Arc<AtomicBool>,
+}
+
+fn external_candidates(attachment: &model::Attachment) -> Vec<url::Url> {
+	let mut out = Vec::new();
+	for raw in [
+		attachment.media.url.as_deref(),
+		attachment.media.proxy_url.as_deref(),
+	]
+	.into_iter()
+	.flatten()
+	{
+		if let Ok(parsed) = url::Url::parse(raw)
+			&& source::is_safe_external_video_url(&parsed, false)
+			&& !out.contains(&parsed)
+		{
+			out.push(parsed);
+		}
+	}
+	out
 }
 /// Decoded poster answer waiting for UI delivery through `poll`.
 struct PosterDone {
@@ -174,10 +195,22 @@ impl Video {
 		ctx: &eframe::egui::Context,
 		demo: bool,
 	) -> Result<(), &'static str> {
-		if !attachment.is_video() || attachment.size == 0 || attachment.size > 100 * 1024 * 1024 {
+		if !attachment.is_video() {
 			return Err("Video preview limit: 100 MiB");
 		}
-		let url = if demo {
+		let external_urls = if !demo && ui::is_external_video(attachment.id) {
+			let urls = external_candidates(&attachment);
+			if urls.is_empty() {
+				return Err("Video attachment unavailable");
+			}
+			urls
+		} else {
+			if attachment.size == 0 || attachment.size > 100 * 1024 * 1024 {
+				return Err("Video preview limit: 100 MiB");
+			}
+			Vec::new()
+		};
+		let url = if demo || !external_urls.is_empty() {
 			None
 		} else {
 			Some(
@@ -219,6 +252,7 @@ impl Video {
 		requests.send_replace(Some(Request {
 			session: session.clone(),
 			url,
+			external_urls,
 			size: attachment.size as usize,
 		}));
 		self.session = Some(session);
@@ -254,11 +288,21 @@ impl Video {
 		demo: bool,
 	) {
 		let id = attachment.id;
-		if attachment.size == 0 || attachment.size > 100 * 1024 * 1024 {
-			player.poster_failed(id);
-			return;
-		}
-		let url = if demo {
+		let external_urls = if !demo && ui::is_external_video(id) {
+			let urls = external_candidates(&attachment);
+			if urls.is_empty() {
+				player.poster_failed(id);
+				return;
+			}
+			urls
+		} else {
+			if attachment.size == 0 || attachment.size > 100 * 1024 * 1024 {
+				player.poster_failed(id);
+				return;
+			}
+			Vec::new()
+		};
+		let url = if demo || !external_urls.is_empty() {
 			None
 		} else {
 			match crate::downloads::original_url(&attachment) {
@@ -320,6 +364,7 @@ impl Video {
 			jobs.send(PosterJob {
 				id,
 				url,
+				external_urls,
 				size: attachment.size as usize,
 				cancelled: self.poster_cancelled.clone(),
 			})
@@ -340,12 +385,21 @@ fn decode_poster(job: &PosterJob, runtime: &tokio::runtime::Handle) -> Option<(u
 		task::Poll::Ready,
 		time::{Duration, Instant},
 	};
-	let source = source::source(
-		job.url.clone(),
-		job.size,
-		job.cancelled.clone(),
-		runtime.clone(),
-	)
+	let source = if !job.external_urls.is_empty() {
+		source::open_external(
+			&job.external_urls,
+			true,
+			job.cancelled.clone(),
+			runtime.clone(),
+		)
+	} else {
+		source::source(
+			job.url.clone(),
+			job.size,
+			job.cancelled.clone(),
+			runtime.clone(),
+		)
+	}
 	.ok()?;
 	let mut decoder = platform::video::Decoder::open(source).ok()?;
 	// Backends that signal `Pending` (Linux GStreamer) need waiting, not a poll
@@ -424,6 +478,23 @@ impl Drop for Video {
 	}
 }
 
+fn open_request_source(
+	request: &Request,
+	cancelled: Arc<AtomicBool>,
+	runtime: &tokio::runtime::Handle,
+) -> Result<Box<dyn platform::video::ReadSeek>, &'static str> {
+	if !request.external_urls.is_empty() {
+		source::open_external(&request.external_urls, false, cancelled, runtime.clone())
+	} else {
+		source::source(
+			request.url.clone(),
+			request.size,
+			cancelled,
+			runtime.clone(),
+		)
+	}
+}
+
 fn play(
 	request: &Request,
 	runtime: &tokio::runtime::Handle,
@@ -431,12 +502,7 @@ fn play(
 ) -> Result<(), &'static str> {
 	use platform::video::Decoder;
 	let session = &request.session;
-	let source = source::source(
-		request.url.clone(),
-		request.size,
-		session.cancelled.clone(),
-		runtime.clone(),
-	)?;
+	let source = open_request_source(request, session.cancelled.clone(), runtime)?;
 	let result = Decoder::open(source).and_then(|decoder| play_decoded(decoder, session, ctx));
 	#[cfg(target_os = "macos")]
 	let result = match result {
@@ -451,12 +517,7 @@ fn play(
 				0.
 			};
 			ctx.request_repaint();
-			let source = source::source(
-				request.url.clone(),
-				request.size,
-				session.cancelled.clone(),
-				runtime.clone(),
-			)?;
+			let source = open_request_source(request, session.cancelled.clone(), runtime)?;
 			let decoder = fallback::open(source, &session.cancelled)?;
 			// A seek made during conversion takes precedence over automatic resumption.
 			let _ = session.seek.compare_exchange(

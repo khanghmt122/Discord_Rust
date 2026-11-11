@@ -1,7 +1,9 @@
 //! Decoder-driven attachment ranges. No file cache or eager whole-video download.
 use std::{
 	collections::VecDeque,
-	io::{self, Read, Seek, SeekFrom},
+	fs::{File, OpenOptions},
+	io::{self, Read, Seek, SeekFrom, Write},
+	path::PathBuf,
 	sync::{
 		Arc,
 		atomic::{AtomicBool, Ordering},
@@ -13,12 +15,23 @@ use tokio::runtime::Handle;
 const MAX_BYTES: usize = 100 * 1024 * 1024;
 const CHUNK: usize = 256 * 1024;
 const CACHE_CHUNKS: usize = 8;
+const MAX_REDIRECTS: usize = 5;
 const INVALID: &str = "Video download failed or changed; reload the conversation";
 const UNSUPPORTED: &str = "Video server does not support buffering; download to play externally";
 
 pub(super) fn source(
 	url: Option<url::Url>,
 	expected: usize,
+	cancelled: Arc<AtomicBool>,
+	runtime: Handle,
+) -> Result<Box<dyn platform::video::ReadSeek>, &'static str> {
+	source_with_options(url, expected, false, cancelled, runtime)
+}
+
+fn source_with_options(
+	url: Option<url::Url>,
+	expected: usize,
+	external_user_agent: bool,
 	cancelled: Arc<AtomicBool>,
 	runtime: Handle,
 ) -> Result<Box<dyn platform::video::ReadSeek>, &'static str> {
@@ -44,6 +57,7 @@ pub(super) fn source(
 			Input::Http {
 				client,
 				url,
+				external_user_agent,
 				runtime,
 			},
 			expected,
@@ -73,6 +87,7 @@ enum Input {
 	Http {
 		client: wreq::Client,
 		url: url::Url,
+		external_user_agent: bool,
 		runtime: Handle,
 	},
 	#[cfg(feature = "demo")]
@@ -106,12 +121,13 @@ impl Source {
 		if self.cache.len() == CACHE_CHUNKS {
 			self.cache.pop_front();
 		}
-		let (client, url, runtime) = match &self.input {
+		let (client, url, external_user_agent, runtime) = match &self.input {
 			Input::Http {
 				client,
 				url,
+				external_user_agent,
 				runtime,
-			} => (client, url, runtime),
+			} => (client, url, *external_user_agent, runtime),
 			#[cfg(feature = "demo")]
 			Input::Demo(_) => return Err(invalid()),
 		};
@@ -125,15 +141,12 @@ impl Source {
 				}
 			};
 			let transfer = async {
-				let response = client_core::fingerprint::discord_request(
-					client.get(url.as_str()),
-					url.as_str(),
-				)
-				.header(wreq::header::ACCEPT_ENCODING, "identity")
-				.header(wreq::header::RANGE, format!("bytes={start}-{end}"))
-				.send()
-				.await
-				.map_err(|_| invalid())?;
+				let response = build_video_get(client, url, external_user_agent)
+					.header(wreq::header::ACCEPT_ENCODING, "identity")
+					.header(wreq::header::RANGE, format!("bytes={start}-{end}"))
+					.send()
+					.await
+					.map_err(|_| invalid())?;
 				if response.status() == wreq::StatusCode::PARTIAL_CONTENT {
 					let range = format!("bytes {start}-{end}/{}", self.len);
 					if response
@@ -228,6 +241,363 @@ impl Seek for Source {
 		self.position = position as usize;
 		Ok(position)
 	}
+}
+
+fn is_discord_domain(url: &url::Url) -> bool {
+	let Some(host) = url.host_str() else {
+		return false;
+	};
+	let host = host.to_ascii_lowercase();
+	matches!(
+		host.as_str(),
+		"discord.com" | "discordapp.com" | "discordapp.net" | "discord.gg" | "discord.media"
+	) || host.ends_with(".discord.com")
+		|| host.ends_with(".discordapp.com")
+		|| host.ends_with(".discordapp.net")
+		|| host.ends_with(".discord.media")
+}
+
+fn build_video_get(
+	client: &wreq::Client,
+	url: &url::Url,
+	external_user_agent: bool,
+) -> wreq::RequestBuilder {
+	let req = client_core::fingerprint::discord_request(client.get(url.as_str()), url.as_str());
+	if external_user_agent && !is_discord_domain(url) {
+		req.header(
+			wreq::header::USER_AGENT,
+			client_core::fingerprint::user_agent(),
+		)
+	} else {
+		req
+	}
+}
+
+pub(super) fn is_safe_external_video_url(url: &url::Url, allow_loopback_http: bool) -> bool {
+	if !url.username().is_empty() || url.password().is_some() {
+		return false;
+	}
+	let Some(host) = url.host_str() else {
+		return false;
+	};
+	let loopback = match url.host() {
+		Some(url::Host::Ipv4(ip)) => {
+			if ip.is_loopback() {
+				true
+			} else if ip.is_private()
+				|| ip.is_link_local()
+				|| ip.is_unspecified()
+				|| ip.is_multicast()
+				|| ip.is_broadcast()
+				|| (ip.octets()[0] == 100 && (ip.octets()[1] & 0b1100_0000) == 64)
+			{
+				return false;
+			} else {
+				false
+			}
+		}
+		Some(url::Host::Ipv6(ip)) => {
+			if ip.is_loopback() {
+				true
+			} else if ip.is_unspecified()
+				|| ip.is_multicast()
+				|| ip.is_unique_local()
+				|| ip.is_unicast_link_local()
+			{
+				return false;
+			} else {
+				false
+			}
+		}
+		Some(url::Host::Domain(domain)) => {
+			let lower = domain.to_ascii_lowercase();
+			if lower == "localhost"
+				|| lower.ends_with(".localhost")
+				|| lower.ends_with(".local")
+				|| lower.ends_with(".internal")
+			{
+				return false;
+			}
+			false
+		}
+		None => return false,
+	};
+	if loopback && !allow_loopback_http {
+		return false;
+	}
+	if url.scheme() == "https" {
+		return !host.is_empty();
+	}
+	allow_loopback_http && loopback && url.scheme() == "http"
+}
+
+struct TempVideoFile {
+	file: File,
+	path: PathBuf,
+}
+
+impl TempVideoFile {
+	fn create() -> Result<Self, &'static str> {
+		let mut random = [0_u8; 16];
+		getrandom::fill(&mut random).map_err(|_| INVALID)?;
+		let name: String = random.iter().map(|b| format!("{b:02x}")).collect();
+		let path = std::env::temp_dir().join(format!("serein-ext-video-{name}.bin"));
+		let mut opts = OpenOptions::new();
+		opts.read(true).write(true).create_new(true);
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::OpenOptionsExt;
+			opts.mode(0o600);
+		}
+		let file = opts.open(&path).map_err(|_| INVALID)?;
+		Ok(Self { file, path })
+	}
+}
+
+impl Read for TempVideoFile {
+	fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+		self.file.read(buf)
+	}
+}
+
+impl Seek for TempVideoFile {
+	fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+		self.file.seek(pos)
+	}
+}
+
+impl Drop for TempVideoFile {
+	fn drop(&mut self) {
+		let _ = std::fs::remove_file(&self.path);
+	}
+}
+
+fn is_webpage_content_type(response: &wreq::Response) -> bool {
+	response
+		.headers()
+		.get(wreq::header::CONTENT_TYPE)
+		.and_then(|v| v.to_str().ok())
+		.is_some_and(|ct| {
+			let lower = ct
+				.split(';')
+				.next()
+				.unwrap_or(ct)
+				.trim()
+				.to_ascii_lowercase();
+			matches!(
+				lower.as_str(),
+				"text/html" | "application/xhtml+xml" | "application/json" | "text/plain"
+			)
+		})
+}
+
+fn parse_content_range_total(header: &str) -> Option<usize> {
+	let total = header.trim().rsplit_once('/')?.1.trim();
+	total.parse::<usize>().ok().filter(|&len| len > 0)
+}
+
+enum ExternalOpen {
+	Range { url: url::Url, len: usize },
+	TempFile(TempVideoFile),
+}
+
+pub(super) fn open_external(
+	candidates: &[url::Url],
+	range_only: bool,
+	cancelled: Arc<AtomicBool>,
+	runtime: Handle,
+) -> Result<Box<dyn platform::video::ReadSeek>, &'static str> {
+	open_external_inner(candidates, range_only, false, cancelled, runtime)
+}
+
+fn open_external_inner(
+	candidates: &[url::Url],
+	range_only: bool,
+	allow_loopback_http: bool,
+	cancelled: Arc<AtomicBool>,
+	runtime: Handle,
+) -> Result<Box<dyn platform::video::ReadSeek>, &'static str> {
+	let mut last_error = INVALID;
+	for candidate in candidates {
+		match probe_and_open_candidate(
+			candidate,
+			range_only,
+			allow_loopback_http,
+			&cancelled,
+			&runtime,
+		) {
+			Ok(ExternalOpen::Range { url, len }) => {
+				return source_with_options(Some(url), len, true, cancelled, runtime);
+			}
+			Ok(ExternalOpen::TempFile(temp)) => {
+				return Ok(Box::new(temp));
+			}
+			Err(err) => {
+				last_error = err;
+				if cancelled.load(Ordering::Acquire) {
+					return Err(INVALID);
+				}
+			}
+		}
+	}
+	Err(last_error)
+}
+
+async fn download_bounded_to_temp(
+	response: wreq::Response,
+	cancelled: &AtomicBool,
+) -> Result<TempVideoFile, &'static str> {
+	if is_webpage_content_type(&response) {
+		return Err("Video link returned a webpage instead of video");
+	}
+	if response
+		.content_length()
+		.is_some_and(|len| len > MAX_BYTES as u64)
+	{
+		return Err("Video preview limit: 100 MiB");
+	}
+	let mut temp = TempVideoFile::create()?;
+	let mut written = 0_usize;
+	let mut stream = std::pin::pin!(response.bytes_stream());
+	while let Some(chunk) = futures_util::StreamExt::next(&mut stream)
+		.await
+		.transpose()
+		.map_err(|_| INVALID)?
+	{
+		if cancelled.load(Ordering::Acquire) {
+			return Err(INVALID);
+		}
+		if chunk.len() > MAX_BYTES - written {
+			return Err("Video preview limit: 100 MiB");
+		}
+		temp.file.write_all(&chunk).map_err(|_| INVALID)?;
+		written += chunk.len();
+	}
+	if written == 0 {
+		return Err(INVALID);
+	}
+	temp.file.flush().map_err(|_| INVALID)?;
+	temp.file.seek(SeekFrom::Start(0)).map_err(|_| INVALID)?;
+	Ok(temp)
+}
+
+async fn fetch_full_to_temp(
+	client: &wreq::Client,
+	url: &url::Url,
+	cancelled: &AtomicBool,
+) -> Result<ExternalOpen, &'static str> {
+	let full = build_video_get(client, url, true)
+		.header(wreq::header::ACCEPT_ENCODING, "identity")
+		.send()
+		.await
+		.map_err(|_| INVALID)?;
+	if !full.status().is_success() {
+		return Err(INVALID);
+	}
+	download_bounded_to_temp(full, cancelled)
+		.await
+		.map(ExternalOpen::TempFile)
+}
+
+fn probe_and_open_candidate(
+	start: &url::Url,
+	range_only: bool,
+	allow_loopback_http: bool,
+	cancelled: &Arc<AtomicBool>,
+	runtime: &Handle,
+) -> Result<ExternalOpen, &'static str> {
+	if !is_safe_external_video_url(start, allow_loopback_http) {
+		return Err(INVALID);
+	}
+	let client = wreq::Client::builder()
+		.no_proxy()
+		.no_gzip()
+		.no_brotli()
+		.no_deflate()
+		.no_zstd()
+		.redirect(wreq::redirect::Policy::none())
+		.connect_timeout(Duration::from_secs(15))
+		.timeout(Duration::from_secs(if range_only { 15 } else { 180 }))
+		.build()
+		.map_err(|_| INVALID)?;
+
+	runtime.block_on(async {
+		let cancelled_fut = async {
+			while !cancelled.load(Ordering::Acquire) {
+				tokio::time::sleep(Duration::from_millis(20)).await;
+			}
+		};
+		let work = async {
+			let mut current = start.clone();
+			for _ in 0..=MAX_REDIRECTS {
+				if !is_safe_external_video_url(&current, allow_loopback_http) {
+					return Err(INVALID);
+				}
+				let response = build_video_get(&client, &current, true)
+					.header(wreq::header::ACCEPT_ENCODING, "identity")
+					.header(wreq::header::RANGE, "bytes=0-0")
+					.send()
+					.await
+					.map_err(|_| INVALID)?;
+				let status = response.status();
+				if status.is_redirection() {
+					let location = response
+						.headers()
+						.get(wreq::header::LOCATION)
+						.and_then(|v| v.to_str().ok())
+						.ok_or(INVALID)?;
+					let next = current.join(location).map_err(|_| INVALID)?;
+					current = next;
+					continue;
+				}
+				if is_webpage_content_type(&response) {
+					return Err("Video link returned a webpage instead of video");
+				}
+				if status == wreq::StatusCode::PARTIAL_CONTENT {
+					let total = response
+						.headers()
+						.get(wreq::header::CONTENT_RANGE)
+						.and_then(|v| v.to_str().ok())
+						.and_then(parse_content_range_total);
+					if let Some(len) = total {
+						if len > MAX_BYTES {
+							return Err("Video preview limit: 100 MiB");
+						}
+						return Ok(ExternalOpen::Range { url: current, len });
+					}
+					if range_only {
+						return Err(UNSUPPORTED);
+					}
+					return fetch_full_to_temp(&client, &current, cancelled).await;
+				}
+				if status == wreq::StatusCode::OK {
+					if range_only {
+						return Err(UNSUPPORTED);
+					}
+					return download_bounded_to_temp(response, cancelled)
+						.await
+						.map(ExternalOpen::TempFile);
+				}
+				if matches!(
+					status,
+					wreq::StatusCode::RANGE_NOT_SATISFIABLE
+						| wreq::StatusCode::METHOD_NOT_ALLOWED
+						| wreq::StatusCode::NOT_IMPLEMENTED
+				) {
+					if range_only {
+						return Err(UNSUPPORTED);
+					}
+					return fetch_full_to_temp(&client, &current, cancelled).await;
+				}
+				return Err(INVALID);
+			}
+			Err(INVALID)
+		};
+		tokio::select! { biased;
+			_ = cancelled_fut => Err(INVALID),
+			result = work => result,
+		}
+	})
 }
 
 #[cfg(test)]
@@ -468,5 +838,134 @@ mod tests {
 			)
 			.is_err()
 		);
+	}
+
+	#[test]
+	fn external_video_url_safety_rejects_private_and_insecure_hosts() {
+		for bad in [
+			"http://x0.at/RwV9.mov",
+			"https://127.0.0.1/clip.mp4",
+			"https://10.0.0.1/clip.mp4",
+			"https://192.168.1.50/clip.mp4",
+			"https://169.254.169.254/latest/meta-data",
+			"https://localhost/clip.mp4",
+			"https://user:pass@x0.at/RwV9.mov",
+		] {
+			let parsed = url::Url::parse(bad).unwrap();
+			assert!(
+				!is_safe_external_video_url(&parsed, false),
+				"should reject {bad}"
+			);
+		}
+		for good in [
+			"https://x0.at/RwV9.mov",
+			"https://files.catbox.moe/sample.mp4",
+			"https://images-ext-1.discordapp.net/external/abc/https/x0.at/RwV9.mov",
+		] {
+			let parsed = url::Url::parse(good).unwrap();
+			assert!(
+				is_safe_external_video_url(&parsed, false),
+				"should accept {good}"
+			);
+		}
+	}
+
+	#[test]
+	fn open_external_handles_redirect_range_and_non_range_fallback() {
+		let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+		let address = listener.local_addr().unwrap();
+		let start_url = url::Url::parse(&format!("http://{address}/redirect.mov")).unwrap();
+		let payload = b"0123456789abcdefMOVDATA!";
+		let server = std::thread::spawn(move || {
+			for step in 0..4 {
+				let (mut socket, _) = listener.accept().unwrap();
+				socket
+					.set_read_timeout(Some(Duration::from_secs(2)))
+					.unwrap();
+				let mut header = Vec::new();
+				while !header.ends_with(b"\r\n\r\n") {
+					let mut b = [0];
+					socket.read_exact(&mut b).unwrap();
+					header.push(b[0]);
+				}
+				let req = String::from_utf8(header).unwrap();
+				let path = req.lines().next().unwrap_or("");
+				match step {
+					0 => {
+						// Redirect to /range.mov
+						assert!(path.starts_with("GET /redirect.mov"));
+						write!(
+							socket,
+							"HTTP/1.1 302 Found\r\nLocation: /range.mov\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+						)
+						.unwrap();
+					}
+					1 => {
+						// Range probe 0-0
+						assert!(path.starts_with("GET /range.mov"));
+						write!(
+							socket,
+							"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-0/{}\r\nContent-Length: 1\r\nConnection: close\r\n\r\n",
+							payload.len()
+						)
+						.unwrap();
+						socket.write_all(&payload[..1]).unwrap();
+					}
+					2 => {
+						// Full range read
+						write!(
+							socket,
+							"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+							payload.len() - 1,
+							payload.len(),
+							payload.len()
+						)
+						.unwrap();
+						socket.write_all(payload).unwrap();
+					}
+					_ => {
+						// Non-range server returns 200 OK
+						write!(
+							socket,
+							"HTTP/1.1 200 OK\r\nContent-Type: video/quicktime\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+							payload.len()
+						)
+						.unwrap();
+						socket.write_all(payload).unwrap();
+					}
+				}
+			}
+		});
+		let runtime = tokio::runtime::Builder::new_multi_thread()
+			.worker_threads(1)
+			.enable_all()
+			.build()
+			.unwrap();
+		let cancelled = Arc::new(AtomicBool::new(false));
+		let mut range_reader = open_external_inner(
+			std::slice::from_ref(&start_url),
+			true,
+			true,
+			cancelled.clone(),
+			runtime.handle().clone(),
+		)
+		.unwrap();
+		let mut out = Vec::new();
+		range_reader.read_to_end(&mut out).unwrap();
+		assert_eq!(out, payload);
+
+		let full_url = url::Url::parse(&format!("http://{address}/full.mov")).unwrap();
+		let mut temp_reader = open_external_inner(
+			std::slice::from_ref(&full_url),
+			false,
+			true,
+			cancelled,
+			runtime.handle().clone(),
+		)
+		.unwrap();
+		let mut out2 = Vec::new();
+		temp_reader.read_to_end(&mut out2).unwrap();
+		assert_eq!(out2, payload);
+		server.join().unwrap();
 	}
 }

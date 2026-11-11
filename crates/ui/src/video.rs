@@ -25,6 +25,152 @@ const BAR_HEIGHT: f32 = 60.0;
 /// Decoded pictures share the platform's inline bound: 4K worth of pixels in a 3840 px square.
 const MAX_FRAME_EDGE: usize = 3840;
 const MAX_FRAME_PIXELS: usize = 3840 * 2160;
+const VIDEO_EXTENSIONS: [&str; 6] = ["mp4", "mov", "m4v", "webm", "mkv", "avi"];
+pub const EXTERNAL_VIDEO_FLAG: u64 = 1 << 63;
+
+/// Returns whether a video attachment id denotes an external/embed/link video whose byte size
+/// may be unknown (`0`) until probed by the desktop worker.
+pub fn is_external_video(id: Id) -> bool {
+	(id.0 & EXTERNAL_VIDEO_FLAG) != 0
+}
+
+pub(crate) fn external_video_id(message_id: Id, url: &str) -> Id {
+	let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+	for byte in message_id.0.to_le_bytes().into_iter().chain(url.bytes()) {
+		hash ^= u64::from(byte);
+		hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+	}
+	Id((hash & !EXTERNAL_VIDEO_FLAG) | EXTERNAL_VIDEO_FLAG)
+}
+
+fn path_video_extension(path: &str) -> Option<&'static str> {
+	let last = path.rsplit('/').next()?;
+	let (_, ext) = last.rsplit_once('.')?;
+	VIDEO_EXTENSIONS
+		.iter()
+		.copied()
+		.find(|supported| ext.eq_ignore_ascii_case(supported))
+}
+
+/// HTML iframe player URLs cannot be decoded as raw byte streams unless they carry a direct
+/// video file extension or proxy stream.
+pub(crate) fn is_iframe_embed_url(raw: &str) -> bool {
+	let Ok(parsed) = url::Url::parse(raw) else {
+		return false;
+	};
+	if path_video_extension(parsed.path()).is_some() {
+		return false;
+	}
+	let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+	let path = parsed.path().to_ascii_lowercase();
+	matches!(
+		host.as_str(),
+		"youtube.com"
+			| "www.youtube.com"
+			| "m.youtube.com"
+			| "youtu.be"
+			| "www.youtube-nocookie.com"
+			| "vimeo.com"
+			| "player.vimeo.com"
+			| "twitch.tv"
+			| "www.twitch.tv"
+			| "clips.twitch.tv"
+			| "player.twitch.tv"
+			| "open.spotify.com"
+			| "soundcloud.com"
+			| "w.soundcloud.com"
+	) || path.contains("/embed/")
+}
+
+pub(crate) fn looks_like_video_url(raw: &str) -> bool {
+	let Some(safe) = crate::markdown::external_url(raw) else {
+		return false;
+	};
+	let Ok(parsed) = url::Url::parse(&safe) else {
+		return false;
+	};
+	if path_video_extension(parsed.path()).is_some() {
+		return true;
+	}
+	if is_iframe_embed_url(&safe) {
+		return false;
+	}
+	parsed.query_pairs().any(|(key, value)| {
+		let key = key.to_ascii_lowercase();
+		let value = value.to_ascii_lowercase();
+		(matches!(key.as_str(), "mime" | "mime_type" | "content_type")
+			&& (value.starts_with("video/") || value.starts_with("video_")))
+			|| (key == "format"
+				&& VIDEO_EXTENSIONS
+					.iter()
+					.any(|ext| value.eq_ignore_ascii_case(ext)))
+	})
+}
+
+pub(crate) fn synthetic_attachment(
+	message_id: Id,
+	url: &str,
+	proxy_url: Option<&str>,
+	width: u32,
+	height: u32,
+	title_hint: Option<&str>,
+) -> Option<Attachment> {
+	let primary = crate::markdown::external_url(url);
+	let proxy = proxy_url.and_then(crate::markdown::external_url);
+	let chosen = primary.as_deref().or(proxy.as_deref())?;
+	let parsed = url::Url::parse(chosen).ok();
+	let path_ext = parsed.as_ref().and_then(|u| path_video_extension(u.path()));
+	let raw_name = parsed
+		.as_ref()
+		.and_then(|u| u.path_segments())
+		.and_then(|mut s| s.next_back())
+		.filter(|s| !s.is_empty() && path_video_extension(s).is_some())
+		.map(str::to_owned)
+		.unwrap_or_else(|| {
+			let base = title_hint
+				.map(str::trim)
+				.filter(|s| !s.is_empty())
+				.map(|s| {
+					s.chars()
+						.take(48)
+						.map(|c| {
+							if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ' ') {
+								c
+							} else {
+								'_'
+							}
+						})
+						.collect::<String>()
+				})
+				.filter(|s| !s.trim().is_empty())
+				.unwrap_or_else(|| "video".to_owned());
+			format!("{base}.{}", path_ext.unwrap_or("mp4"))
+		});
+	let content_type = match path_ext {
+		Some("mov") => "video/quicktime",
+		Some("webm") => "video/webm",
+		Some("mkv") => "video/x-matroska",
+		Some("avi") => "video/x-msvideo",
+		_ => "video/mp4",
+	};
+	Some(Attachment {
+		id: external_video_id(message_id, chosen),
+		filename: raw_name,
+		description: None,
+		content_type: Some(content_type.to_owned()),
+		size: 0,
+		media: model::EmbedMedia {
+			url: primary.or_else(|| proxy.clone()),
+			proxy_url: proxy,
+			width,
+			height,
+			placeholder: Vec::new(),
+		},
+		spoiler: false,
+		duration_ms: None,
+		waveform: Vec::new(),
+	})
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum VideoState {
@@ -390,8 +536,10 @@ impl VideoUi {
 				}
 			} else if state == VideoState::Idle
 				&& !self.poster_seen.contains(&attachment.id)
-				&& attachment.size > 0
-				&& attachment.size <= 100 * 1024 * 1024
+				&& ((attachment.size > 0 && attachment.size <= 100 * 1024 * 1024)
+					|| (is_external_video(attachment.id)
+						&& (attachment.media.url.is_some()
+							|| attachment.media.proxy_url.is_some())))
 				&& ui.is_rect_visible(stage)
 				&& !self
 					.poster_queue
@@ -791,22 +939,23 @@ impl VideoUi {
 			|ui| {
 				ui.spacing_mut().item_spacing.x = 6.0;
 				let idle = !demo && !download.busy();
-				if ui
-					.add_enabled_ui(idle, |ui| {
-						crate::attachments::glass_button(
-							ui,
-							crate::icons::Icon::Download,
-							28.0,
-							"Download",
-						)
-					})
-					.inner
-					.on_disabled_hover_text(crate::i18n::translate_if_key(if demo {
-						"video-show-player-downloads-are-disabled-for-synthetic-attachments"
-					} else {
-						"video-show-player-a-download-is-already-active"
-					}))
-					.clicked()
+				if !is_external_video(attachment.id)
+					&& ui
+						.add_enabled_ui(idle, |ui| {
+							crate::attachments::glass_button(
+								ui,
+								crate::icons::Icon::Download,
+								28.0,
+								"Download",
+							)
+						})
+						.inner
+						.on_disabled_hover_text(crate::i18n::translate_if_key(if demo {
+							"video-show-player-downloads-are-disabled-for-synthetic-attachments"
+						} else {
+							"video-show-player-a-download-is-already-active"
+						}))
+						.clicked()
 				{
 					download.request = Some(attachment.clone());
 				}
@@ -1317,5 +1466,31 @@ mod tests {
 		assert!(!video.posters.contains_key(&Id(4)));
 		assert!(!video.poster_seen.contains(&Id(3)));
 		assert!(video.poster_bytes <= POSTER_BUDGET);
+	}
+
+	#[test]
+	fn external_video_detection_accepts_direct_streams_and_rejects_iframes() {
+		assert!(looks_like_video_url("https://x0.at/RwV9.mov"));
+		assert!(looks_like_video_url(
+			"https://files.catbox.moe/abc123.MP4?download=1"
+		));
+		assert!(looks_like_video_url(
+			"https://v16.tiktokcdn.com/video/tos/clip/?mime_type=video_mp4"
+		));
+		assert!(!looks_like_video_url(
+			"https://www.youtube.com/embed/dQw4w9WgXcQ"
+		));
+		assert!(!looks_like_video_url("https://example.com/post/123"));
+		assert!(is_iframe_embed_url(
+			"https://www.youtube.com/embed/dQw4w9WgXcQ"
+		));
+		assert!(!is_iframe_embed_url("https://x0.at/RwV9.mov"));
+
+		let att =
+			synthetic_attachment(Id(99), "https://x0.at/RwV9.mov", None, 1280, 720, None).unwrap();
+		assert!(is_external_video(att.id));
+		assert!(att.is_video());
+		assert_eq!(att.filename, "RwV9.mov");
+		assert_eq!(att.size, 0);
 	}
 }

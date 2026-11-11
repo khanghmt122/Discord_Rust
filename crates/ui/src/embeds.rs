@@ -174,6 +174,113 @@ fn clip_media(embed: &Embed) -> Option<&model::EmbedMedia> {
 	.then_some(clip)
 }
 
+/// Resolves an embed that carries a directly streamable/decodable video (hosted `.mp4`/`.mov`/`.webm`
+/// or Discord-proxied social video) into an inline `VideoUi` attachment. HTML iframe embeds like
+/// YouTube stay on the browser fallback unless a direct video stream URL is present.
+pub(crate) fn playable_embed_video(
+	embed: &Embed,
+	message_id: model::Id,
+) -> Option<model::Attachment> {
+	if embed.kind == "gifv" {
+		return None;
+	}
+	if let Some(clip) = &embed.video {
+		let clip_url = clip.url.as_deref();
+		let embed_url = embed.url.as_deref();
+		let proxy_url = clip.proxy_url.as_deref();
+		let is_iframe = clip_url.is_some_and(crate::video::is_iframe_embed_url)
+			&& !embed_url.is_some_and(crate::video::looks_like_video_url)
+			&& proxy_url.is_none();
+		if is_iframe {
+			return None;
+		}
+		let directly_playable = proxy_url.is_some()
+			|| clip_url.is_some_and(crate::video::looks_like_video_url)
+			|| embed_url.is_some_and(crate::video::looks_like_video_url);
+		if !directly_playable {
+			return None;
+		}
+		let primary = clip_url
+			.filter(|u| crate::video::looks_like_video_url(u))
+			.or_else(|| embed_url.filter(|u| crate::video::looks_like_video_url(u)))
+			.or(proxy_url)
+			.or_else(|| clip_url.filter(|u| !crate::video::is_iframe_embed_url(u)))?;
+		return crate::video::synthetic_attachment(
+			message_id,
+			primary,
+			proxy_url,
+			clip.width,
+			clip.height,
+			embed.title.as_deref(),
+		);
+	}
+	if embed.image.is_none()
+		&& let Some(url) = embed
+			.url
+			.as_deref()
+			.filter(|u| crate::video::looks_like_video_url(u))
+	{
+		return crate::video::synthetic_attachment(
+			message_id,
+			url,
+			None,
+			0,
+			0,
+			embed.title.as_deref(),
+		);
+	}
+	None
+}
+
+/// Extracts direct video URLs from message text/masked links (such as Large File Uploader links)
+/// that are not already rendered by a playable embed on the same message.
+pub(crate) fn uncovered_message_videos(
+	message: &Message,
+	links: &[String],
+) -> Vec<model::Attachment> {
+	let mut covered = std::collections::HashSet::new();
+	for embed in &message.embeds {
+		if let Some(att) = playable_embed_video(embed, message.id) {
+			if let Some(u) = &att.media.url {
+				covered.insert(u.clone());
+			}
+			if let Some(u) = &att.media.proxy_url {
+				covered.insert(u.clone());
+			}
+			if let Some(u) = &embed.url {
+				covered.insert(u.clone());
+			}
+		}
+	}
+	let mut out = Vec::new();
+	for link in links {
+		if crate::video::looks_like_video_url(link)
+			&& covered.insert(link.clone())
+			&& let Some(att) =
+				crate::video::synthetic_attachment(message.id, link, None, 0, 0, None)
+		{
+			out.push(att);
+		}
+	}
+	out
+}
+
+pub(crate) fn has_playable_video(
+	message: &Message,
+	target: &model::Attachment,
+	links: &[String],
+) -> bool {
+	(!message.embeds_suppressed
+		&& message
+			.embeds
+			.iter()
+			.filter_map(|e| playable_embed_video(e, message.id))
+			.any(|att| &att == target))
+		|| uncovered_message_videos(message, links)
+			.iter()
+			.any(|att| att == target)
+}
+
 // Discord link previews carry additional images as same-URL embed entries.
 // Only consume continuations without independent content (or with repeated metadata).
 fn gallery_len(embeds: &[Embed]) -> usize {
@@ -555,6 +662,7 @@ pub fn show(
 	images: &mut Avatars,
 	opening: &mut Option<String>,
 	download: &mut DownloadUi,
+	video: &mut crate::video::VideoUi,
 	profile: &mut crate::profiles::ProfileSession,
 	state: &client_core::State,
 	card_surface: crate::design::MessageCardSurface,
@@ -677,11 +785,15 @@ pub fn show(
 						.auto_shrink([false, true])
 						.show(ui, |ui| {
 							let part = 1 + index as u16 * 64;
-							let large = large_thumbnail(embed).filter(|_| count == 1);
-							let thumbnail = embed
-								.thumbnail
-								.as_ref()
-								.filter(|_| large.is_none() && ui.available_width() >= 300.0);
+							let inline_video = (count == 1)
+								.then(|| playable_embed_video(embed, message.id))
+								.flatten();
+							let large = large_thumbnail(embed)
+								.filter(|_| count == 1 && inline_video.is_none());
+							let thumbnail = embed.thumbnail.as_ref().filter(|_| {
+								large.is_none()
+									&& inline_video.is_none() && ui.available_width() >= 300.0
+							});
 							let body_width = (ui.available_width()
 								- if thumbnail.is_some() { 96.0 } else { 0.0 })
 							.max(1.0);
@@ -805,11 +917,18 @@ pub fn show(
 									download,
 									demo,
 								);
+								if let Some(video_att) = &inline_video {
+									ui.add_space(6.0);
+									video.show(ui, message, video_att, download, opening, demo);
+								}
+							} else if let Some(video_att) = &inline_video {
+								video.show(ui, message, video_att, download, opening, demo);
 							} else if let Some(clip) = clip_media(embed) {
 								clip_preview(ui, clip, images, demo);
 							}
 							if thumbnail.is_none()
-								&& large.is_none() && let Some(image) = &embed.thumbnail
+								&& large.is_none() && inline_video.is_none()
+								&& let Some(image) = &embed.thumbnail
 							{
 								image_preview(
 									ui,
@@ -821,7 +940,15 @@ pub fn show(
 									demo,
 								);
 							}
-							if embed.video.is_some()
+							if inline_video.is_some() {
+								if let Some(target) = embed
+									.url
+									.as_deref()
+									.or_else(|| embed.video.as_ref().and_then(|v| v.url.as_deref()))
+								{
+									link(ui, "Open video…", Some(target), opening, false);
+								}
+							} else if embed.video.is_some()
 								|| matches!(embed.kind.as_str(), "video" | "gifv")
 							{
 								ui.small(crate::i18n::translate(
@@ -949,7 +1076,11 @@ pub fn estimated_height(embeds: &[Embed]) -> f32 {
 		let e = &embeds[index];
 		let image_height = if count > 1 {
 			gallery_rect(count, count - 1, 456.0).bottom()
-		} else if e.image.is_some() || large_thumbnail(e).is_some() || clip_media(e).is_some() {
+		} else if e.image.is_some()
+			|| large_thumbnail(e).is_some()
+			|| clip_media(e).is_some()
+			|| playable_embed_video(e, model::Id(0)).is_some()
+		{
 			200.0
 		} else {
 			0.0
@@ -1014,7 +1145,7 @@ pub fn estimated_height(embeds: &[Embed]) -> f32 {
 mod tests {
 	use super::*;
 
-	/// A link that resolves to a hosted clip carries no poster; the card paints the clip.
+	/// A link that resolves to a hosted clip plays inline via VideoUi instead of showing an error box.
 	#[test]
 	fn a_video_card_without_a_poster_shows_its_clip() {
 		let mut embed = Embed {
@@ -1034,11 +1165,11 @@ mod tests {
 		};
 		let clip = clip_media(&embed).expect("the clip is the card's media");
 		assert_eq!((clip.width, clip.height), (640, 1136));
-		// The card asks the media worker for the clip through Discord's proxy.
 		let mut message = test_support::message(1, model::Id(2));
 		message.content = embed.url.clone().unwrap();
 		message.embeds = vec![embed.clone()];
 		let mut images = Avatars::default();
+		let mut video = crate::video::VideoUi::default();
 		egui::Context::default()
 			.run_ui(egui::RawInput::default(), |ui| {
 				show(
@@ -1048,6 +1179,7 @@ mod tests {
 					&mut images,
 					&mut None,
 					&mut DownloadUi::default(),
+					&mut video,
 					&mut crate::profiles::ProfileSession::default(),
 					&client_core::State::default(),
 					crate::design::MessageCardSurface::Conversation,
@@ -1055,13 +1187,8 @@ mod tests {
 				);
 			})
 			.drop_without_applying_deltas();
-		let proxied = clip.proxy_url.as_deref().unwrap();
-		assert!(
-			images
-				.take_requests()
-				.iter()
-				.any(|request| request.starts_with("media:") && request.ends_with(proxied))
-		);
+		assert_eq!(video.poster_queue.len(), 1);
+		assert!(crate::video::is_external_video(video.poster_queue[0].id));
 		// A card with a picture keeps its poster or bot thumbnail instead.
 		embed.thumbnail = Some(model::EmbedMedia {
 			url: Some("https://example.org/reels/synthetic/poster.png".into()),
@@ -1198,6 +1325,7 @@ mod tests {
 								&mut images,
 								&mut opening,
 								&mut DownloadUi::default(),
+								&mut crate::video::VideoUi::default(),
 								&mut crate::profiles::ProfileSession::default(),
 								&client_core::State::default(),
 								crate::design::MessageCardSurface::Conversation,
@@ -1289,6 +1417,7 @@ mod tests {
 									&mut images,
 									&mut opening,
 									&mut download,
+									&mut crate::video::VideoUi::default(),
 									&mut profile,
 									&client_core::State::default(),
 									crate::design::MessageCardSurface::Conversation,
@@ -1535,6 +1664,62 @@ mod tests {
 			gif.url,
 			"https://static.klipy.com/ii/71b2873e478b9d8d0482ea3ec777ba7f/f6/40/HtVp9vFM.webp"
 		);
+	}
+
+	#[test]
+	fn playable_embed_video_resolves_direct_and_proxied_streams_and_skips_iframes() {
+		let youtube = Embed {
+			kind: "video".into(),
+			url: Some("https://www.youtube.com/watch?v=dQw4w9WgXcQ".into()),
+			video: Some(model::EmbedMedia {
+				url: Some("https://www.youtube.com/embed/dQw4w9WgXcQ".into()),
+				..Default::default()
+			}),
+			..Default::default()
+		};
+		assert!(playable_embed_video(&youtube, model::Id(1)).is_none());
+
+		let tiktok_proxied = Embed {
+			kind: "video".into(),
+			url: Some("https://www.tiktok.com/@user/video/123".into()),
+			video: Some(model::EmbedMedia {
+				url: Some("https://www.tiktok.com/embed/v2/123".into()),
+				proxy_url: Some(
+					"https://images-ext-1.discordapp.net/external/abc/https/v16.tiktokcdn.com/clip.mp4"
+						.into(),
+				),
+				..Default::default()
+			}),
+			..Default::default()
+		};
+		let tt = playable_embed_video(&tiktok_proxied, model::Id(2)).unwrap();
+		assert_eq!(
+			tt.media.url.as_deref(),
+			Some(
+				"https://images-ext-1.discordapp.net/external/abc/https/v16.tiktokcdn.com/clip.mp4"
+			)
+		);
+
+		let direct_link_embed = Embed {
+			kind: "link".into(),
+			url: Some("https://x0.at/RwV9.mov".into()),
+			..Default::default()
+		};
+		let mov = playable_embed_video(&direct_link_embed, model::Id(3)).unwrap();
+		assert_eq!(mov.filename, "RwV9.mov");
+		assert!(mov.is_video());
+
+		let mut msg = test_support::message(1, model::Id(3));
+		msg.embeds = vec![direct_link_embed];
+		let uncovered = uncovered_message_videos(
+			&msg,
+			&[
+				"https://x0.at/RwV9.mov".into(),
+				"https://files.catbox.moe/other.mp4".into(),
+			],
+		);
+		assert_eq!(uncovered.len(), 1);
+		assert_eq!(uncovered[0].filename, "other.mp4");
 	}
 }
 

@@ -2293,42 +2293,49 @@ impl TimelineView {
 			// Runs before the timeline lays out, so the tweak is read directly.
 			let hide_blocked =
 				crate::interface_tweaks::on(ctx, extensions::InterfaceTweak::HiddenBlockedMessages);
-			let current = self
-				.video
-				.active
-				.as_ref()
-				.and_then(|(channel, id, attachment)| {
+			let active = self.video.active.clone();
+			let current = active.as_ref().and_then(|(channel, id, attachment)| {
+				let message = state.timeline.get(*id).or_else(|| {
 					state
-						.timeline
-						.get(*id)
-						.or_else(|| {
-							state
-								.interactions
-								.ephemeral
-								.iter()
-								.find(|message| message.id == *id)
-						})
-						.filter(|message| {
-							state.selected == Some(*channel)
-								&& !(hide_blocked
-									&& state.user_blocked(message.author.id) == Some(true))
-								&& message.channel == *channel
-								&& message.attachments.contains(attachment)
-								&& (self.component_viewing
-									== Some((
-										message.id,
-										egui::Id::unique((
-											&message.components,
-											&message.attachments,
-										))
-										.value(),
-									)) || !crate::embeds::attachment_spoiler(attachment)
-									|| self.revealed.get(id).is_some_and(|reveal| {
-										reveal.media && reveal.matches(message)
-									}))
-						})
-						.map(|message| (message, attachment.clone()))
-				});
+						.interactions
+						.ephemeral
+						.iter()
+						.find(|message| message.id == *id)
+				})?;
+				let visible = state.selected == Some(*channel)
+					&& !(hide_blocked && state.user_blocked(message.author.id) == Some(true))
+					&& message.channel == *channel;
+				if !visible {
+					return None;
+				}
+				let in_attachments = message.attachments.contains(attachment);
+				let in_embeds_or_links = if !in_attachments {
+					let links = self
+						.formatted
+						.get(message.id, &message.content)
+						.links
+						.clone();
+					crate::embeds::has_playable_video(message, attachment, &links)
+				} else {
+					false
+				};
+				let in_components = !in_attachments
+					&& !in_embeds_or_links
+					&& crate::components::has_playable_video(message, attachment);
+				if !(in_attachments || in_embeds_or_links || in_components) {
+					return None;
+				}
+				let unspoiled = self.component_viewing
+					== Some((
+						message.id,
+						egui::Id::unique((&message.components, &message.attachments)).value(),
+					)) || !crate::embeds::attachment_spoiler(attachment)
+					|| self
+						.revealed
+						.get(id)
+						.is_some_and(|reveal| reveal.media && reveal.matches(message));
+				unspoiled.then(|| (message, attachment.clone()))
+			});
 			if let Some((message, attachment)) = current {
 				self.video.show_fullscreen(
 					ctx,
@@ -4128,12 +4135,40 @@ impl TimelineView {
 													avatars,
 													&mut self.opening,
 													&mut self.download,
+													&mut self.video,
 													profile,
 													state,
 													crate::design::MessageCardSurface::Conversation,
 													self.hide_media_links,
 												) {
 													self.gif_favorite = Some(gif);
+												}
+												if !concealed && !message.embeds_suppressed {
+													let links = self
+														.formatted
+														.get(id, &message.content)
+														.links
+														.clone();
+													for video_att in
+														crate::embeds::uncovered_message_videos(
+															message, &links,
+														) {
+														ui.push_id(
+															("inline-link-video", video_att.id),
+															|ui| {
+																let response = self.video.show(
+																	ui,
+																	message,
+																	&video_att,
+																	&mut self.download,
+																	&mut self.opening,
+																	state.demo,
+																);
+																surface.keep(&response);
+																ui.add_space(6.0);
+															},
+														);
+													}
 												}
 												surface.exclude(egui::Rect::from_min_max(
 													egui::pos2(ui.max_rect().left(), embed_top),
@@ -10487,6 +10522,7 @@ mod tests {
 					&mut crate::avatars::Avatars::default(),
 					&mut None,
 					&mut crate::attachments::DownloadUi::default(),
+					&mut crate::video::VideoUi::default(),
 					&mut profile,
 					&State {
 						demo: true,
