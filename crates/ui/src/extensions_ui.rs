@@ -326,10 +326,10 @@ impl ExtensionUi {
 	}
 	pub fn receive_theme_image(&mut self, bytes: Vec<u8>, image: Arc<egui::ColorImage>) {
 		if bytes.len() > extensions::MAX_BACKGROUND_BYTES
-			|| image.size.contains(&0)
-			|| image.size.into_iter().any(|side| side > 4096)
-			|| image.pixels.len() > 4_000_000
-			|| image.pixels.len() != image.size[0] * image.size[1]
+			|| image.resolution().contains(&0)
+			|| image.resolution().into_iter().any(|side| side > 4096)
+			|| image.pixels().len() > 4_000_000
+			|| image.pixels().len() != image.resolution()[0] * image.resolution()[1]
 		{
 			return;
 		}
@@ -351,10 +351,10 @@ impl ExtensionUi {
 	}
 	pub fn receive_theme_cover(&mut self, bytes: Vec<u8>, image: Arc<egui::ColorImage>) {
 		if bytes.len() > extensions::MAX_BACKGROUND_BYTES
-			|| image.size.contains(&0)
-			|| image.size[0] > 640
-			|| image.size[1] > 360
-			|| image.pixels.len() != image.size[0] * image.size[1]
+			|| image.resolution().contains(&0)
+			|| image.resolution()[0] > 640
+			|| image.resolution()[1] > 360
+			|| image.pixels().len() != image.resolution()[0] * image.resolution()[1]
 		{
 			return;
 		}
@@ -692,11 +692,11 @@ impl ExtensionUi {
 		if let Some(preview) = self.previews.get_mut(&id) {
 			preview.loading = false;
 			preview.image = image.filter(|image| {
-				image.size[0] > 0
-					&& image.size[1] > 0
-					&& image.size[0] <= 640
-					&& image.size[1] <= 360
-					&& image.pixels.len() == image.size[0] * image.size[1]
+				image.resolution()[0] > 0
+					&& image.resolution()[1] > 0
+					&& image.resolution()[0] <= 640
+					&& image.resolution()[1] <= 360
+					&& image.pixels().len() == image.resolution()[0] * image.resolution()[1]
 			});
 		}
 	}
@@ -830,7 +830,7 @@ impl ExtensionUi {
 			if let Some(texture) = &preview.texture {
 				ui.painter().rect_filled(rect, radius, colors.base);
 				if entry.cover_image.is_some() {
-					let source = texture.size_vec2();
+					let source = texture.resolution_vec2();
 					let source_ratio = source.x / source.y;
 					let target_ratio = rect.width() / rect.height();
 					let uv = if source_ratio > target_ratio {
@@ -851,9 +851,9 @@ impl ExtensionUi {
 						.corner_radius(radius)
 						.paint_at(ui, rect);
 				} else {
-					let fit = texture.size_vec2()
-						* (rect.width() / texture.size_vec2().x)
-							.min(rect.height() / texture.size_vec2().y);
+					let fit = texture.resolution_vec2()
+						* (rect.width() / texture.resolution_vec2().x)
+							.min(rect.height() / texture.resolution_vec2().y);
 					egui::Image::new(texture)
 						.corner_radius(radius)
 						.paint_at(ui, egui::Rect::from_center_size(rect.center(), fit));
@@ -940,7 +940,7 @@ impl ExtensionUi {
 				.min((available.y * 16.0 / 9.0).max(1.0));
 			egui::vec2(width, width * 9.0 / 16.0)
 		} else if let Some(texture) = texture {
-			let source = texture.size_vec2().max(egui::vec2(1.0, 1.0));
+			let source = texture.resolution_vec2().max(egui::vec2(1.0, 1.0));
 			let bounds = available.max(egui::vec2(1.0, 1.0));
 			source * (bounds.x / source.x).min(bounds.y / source.y)
 		} else {
@@ -2555,7 +2555,7 @@ fn request_bytes(request: &ExtensionRequest) -> usize {
 			}
 			ExtensionRequest::PreviewTheme { theme, image } => {
 				usize::from(theme.is_some()) * 16384
-					+ image.as_ref().map_or(0, |image| image.pixels.len() * 4)
+					+ image.as_ref().map_or(0, |image| image.pixels().len() * 4)
 			}
 			ExtensionRequest::RefreshCatalog | ExtensionRequest::Import => 0,
 			ExtensionRequest::SelectTheme { id } => id.as_ref().map_or(0, String::len),
@@ -2916,6 +2916,7 @@ fn capability_label(capability: Capability) -> &'static str {
 		Capability::MessageEvents => "Read live message events and text in the active conversation",
 		Capability::SelectedMessage => "Read the message I choose for an action",
 		Capability::ContextMenus => "Add actions to user, channel, server and role menus",
+		Capability::InterfaceTweaks => "Change how parts of the interface look or behave",
 		Capability::Composer => "Read my draft and propose text changes",
 		Capability::Storage => "Store up to 1 MiB of local data for this account",
 		Capability::AppContext => "Read my account and current conversation details",
@@ -3000,6 +3001,9 @@ fn capability_label(capability: Capability) -> &'static str {
 		Capability::AppEvents => "Receive app lifecycle and navigation events while enabled",
 		Capability::DeletedMessages => {
 			"Keep loaded deleted messages in session memory while enabled"
+		}
+		Capability::ExternalNavigation => {
+			"Propose opening an external HTTPS link in the browser for approval"
 		}
 	}
 }
@@ -3739,11 +3743,18 @@ mod tests {
 				data: None,
 			},
 		)];
-		for (input, activation) in [
-			("primary click", None),
-			("Enter", Some(key(egui::Key::Enter))),
-			("Space", Some(key(egui::Key::Space))),
-			("screen reader click", Some(accessible_click)),
+		// `true`: the keyboard focus is first moved onto the chip; `false`: it stays elsewhere,
+		// as when a screen reader clicks a control the user never tabbed to.
+		for (input, activation, focused) in [
+			("primary click", None, false),
+			("Enter", Some(key(egui::Key::Enter)), true),
+			("Space", Some(key(egui::Key::Space)), true),
+			("screen reader click", Some(accessible_click.clone()), true),
+			(
+				"unfocused screen reader click",
+				Some(accessible_click),
+				false,
+			),
 		] {
 			for _ in 0..3 {
 				if !egui::Popup::is_any_open(&ctx) {
@@ -3756,14 +3767,18 @@ mod tests {
 				"{input}: menu closed first"
 			);
 			let texts = frame(&mut shop, vec![]);
-			let events = match activation {
-				Some(events) => {
-					ctx.memory_mut(|memory| memory.request_focus(chip_id));
-					frame(&mut shop, vec![]);
-					events
-				}
-				None => press_at(chip(&texts)),
-			};
+			if focused {
+				ctx.memory_mut(|memory| memory.request_focus(chip_id));
+				frame(&mut shop, vec![]);
+			} else {
+				ctx.memory_mut(|memory| memory.surrender_focus(chip_id));
+				frame(&mut shop, vec![]);
+				assert!(
+					!ctx.memory(|memory| memory.has_focus(chip_id)),
+					"{input}: the chip is not focused"
+				);
+			}
+			let events = activation.unwrap_or_else(|| press_at(chip(&texts)));
 			let texts = frame(&mut shop, events);
 			let texts = menu_open(&mut shop, texts);
 			assert!(
@@ -4023,7 +4038,7 @@ mod tests {
 				shop.previews
 					.values()
 					.filter_map(|preview| preview.image.as_ref())
-					.map(|image| image.pixels.len() * 4)
+					.map(|image| image.pixels().len() * 4)
 					.sum::<usize>(),
 				22_118_400
 			);

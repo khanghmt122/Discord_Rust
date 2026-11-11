@@ -99,8 +99,8 @@ pub fn is_gojo() -> bool {
 }
 
 pub fn detect_gojo_eye(image: &egui::ColorImage) -> bool {
-	let w = image.size[0];
-	let h = image.size[1];
+	let w = image.resolution()[0];
+	let h = image.resolution()[1];
 	if w < 100 || h < 100 {
 		return false;
 	}
@@ -113,7 +113,7 @@ pub fn detect_gojo_eye(image: &egui::ColorImage) -> bool {
 	let mut blue_count = 0;
 	for y in min_y..=max_y {
 		for x in min_x..=max_x {
-			let px = image.pixels[y * w + x];
+			let px = image.pixels()[y * w + x];
 			if px.b() > 110 && px.b() > px.r() + 20 {
 				blue_count += 1;
 			}
@@ -496,7 +496,7 @@ mod tests {
 		// Paint a blue eye region around (0.461 * 200 = 92, 0.477 * 200 = 95)
 		for y in 90..100 {
 			for x in 90..100 {
-				img.pixels[y * 200 + x] = Color32::from_rgb(20, 150, 240);
+				img.pixels_mut()[y * 200 + x] = Color32::from_rgb(20, 150, 240);
 			}
 		}
 		assert!(detect_gojo_eye(&img));

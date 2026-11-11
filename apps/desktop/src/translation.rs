@@ -2,7 +2,7 @@
 
 /// Translates text to Vietnamese using the Google Translate GTX endpoint.
 /// Returns Ok((translated_text, detected_source_lang)) on success.
-pub async fn translate(client: &reqwest::Client, text: &str) -> Result<(String, String), String> {
+pub async fn translate(client: &wreq::Client, text: &str) -> Result<(String, String), String> {
 	let encoded: String = url::form_urlencoded::byte_serialize(text.as_bytes()).collect();
 	let url = format!(
 		"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=vi&dt=t&q={encoded}"
@@ -11,7 +11,7 @@ pub async fn translate(client: &reqwest::Client, text: &str) -> Result<(String, 
 	let response = client
 		.get(&url)
 		.header(
-			reqwest::header::USER_AGENT,
+			wreq::header::USER_AGENT,
 			"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 		)
 		.send()
