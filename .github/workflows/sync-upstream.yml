@@ -2,16 +2,18 @@ name: Sync Upstream
 
 on:
   schedule:
-    # Chạy tự động hàng ngày lúc 04:00 UTC
-    - cron: '0 4 * * *'
+    # Chạy tự động mỗi 3 ngày lúc 04:00 UTC (11:00 AM VN)
+    - cron: '0 4 */3 * *'
   workflow_dispatch:
 
 permissions:
   contents: write
+  pull-requests: write
+  issues: write
 
 jobs:
   sync:
-    name: Sync with ViceVerse-cz/Serein
+    name: Check & Sync with ViceVerse-cz/Serein
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -24,10 +26,43 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Fetch and Merge Upstream
+      - name: Check Upstream Updates
+        id: check
         run: |
           git remote add upstream https://github.com/ViceVerse-cz/Serein.git || true
           git fetch upstream main
-          git checkout main
-          git merge upstream/main -m "chore: sync with upstream ViceVerse-cz/Serein"
-          git push origin main
+          BEHIND_COUNT=$(git rev-list --count HEAD..upstream/main)
+          echo "behind_count=$BEHIND_COUNT" >> $GITHUB_OUTPUT
+          echo "Số commit mới từ upstream: $BEHIND_COUNT"
+          if [ "$BEHIND_COUNT" -eq 0 ]; then
+            echo "✅ Kho lưu trữ đã đồng bộ mới nhất với upstream."
+          fi
+
+      - name: Safe Merge & Auto PR
+        if: steps.check.outputs.behind_count > 0
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SYNC_BRANCH="sync/upstream-$(date +'%Y%m%d')"
+          echo "Tạo nhánh đồng bộ $SYNC_BRANCH..."
+          git checkout -b "$SYNC_BRANCH"
+          
+          if git merge upstream/main -m "chore(sync): cập nhật $BEHIND_COUNT commit từ ViceVerse-cz/Serein"; then
+            echo "✅ Merge tự động thành công không xung đột. Đang đẩy nhánh..."
+            git push -u origin "$SYNC_BRANCH"
+            
+            # Tạo PR tự động nếu chưa có
+            gh pr create \
+              --title "chore: đồng bộ cập nhật mới từ ViceVerse-cz/Serein ($(date +'%Y-%m-%d'))" \
+              --body "Tự động phát hiện $BEHIND_COUNT commit mới từ upstream chính chủ. Nhánh đã được merge tự động và sẵn sàng review/merge vào main." \
+              --base main \
+              --head "$SYNC_BRANCH" || true
+          else
+            echo "⚠️ Phát hiện xung đột (merge conflicts) giữa các tính năng fork và upstream!"
+            git merge --abort
+            
+            # Tạo Issue cảnh báo để người dùng dễ theo dõi
+            gh issue create \
+              --title "⚠️ [Cần review] Phát hiện xung đột khi đồng bộ upstream ($(date +'%Y-%m-%d'))" \
+              --body "Hệ thống phát hiện có $BEHIND_COUNT commit mới từ ViceVerse-cz/Serein nhưng gặp xung đột với các tính năng custom của fork. Vui lòng chạy lệnh merge thủ công trên máy để giải quyết diff." || true
+          fi

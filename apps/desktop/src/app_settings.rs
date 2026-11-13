@@ -524,6 +524,13 @@ mod tests {
 		ui.auto_idle = defaults.auto_idle;
 		ui.custom_title_bar = defaults.custom_title_bar;
 		ui.setup_pending = !defaults.setup_done;
+		ui.live_particles = defaults.live_particles;
+		ui.eye_glow = defaults.eye_glow;
+		ui.live_bg.mode = defaults.live_bg_mode;
+		ui.live_bg.panel_opacity = defaults.live_bg_panel_opacity;
+		ui.live_bg.bg_opacity = defaults.live_bg_opacity;
+		ui.live_bg.speed_percent = defaults.live_bg_speed;
+		ui.live_bg.custom_path.clone_from(&defaults.live_bg_path);
 		settings.observe(&ui);
 		assert!(
 			!settings.state.touched,
